@@ -44,6 +44,8 @@ pub struct Seen {
     /// Whether the service looked at in particular has a definition that may
     /// be written, or why not.
     pub changeable: Option<(String, Result<(), String>)>,
+    /// Whether a service may be defined, or why not.
+    pub creatable: Result<(), String>,
 }
 
 /// Why peinit was not asked.
@@ -139,6 +141,7 @@ pub fn look(chosen: Option<&str>) -> Seen {
         every: every().map(|(_, from)| from),
         every_changeable: changeable(SERVICES_ROOT_KEY),
         changeable: chosen.map(|chosen| (chosen.to_string(), changeable(&format!("{SERVICES_ROOT_KEY}\\{chosen}")))),
+        creatable: crate::store::creatable(),
     };
     for name in listed.chain(unlisted) {
         let (rights, from) = rights(&name);

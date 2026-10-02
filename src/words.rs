@@ -173,6 +173,14 @@ pub fn named(name: &str) -> Option<Command> {
     }
 }
 
+/// A reason, as a sentence of its own: "you may not change it" is "You may
+/// not change it."
+pub fn sentence(reason: &str) -> String {
+    let mut chars = reason.chars();
+    let first: String = chars.next().map(|first| first.to_uppercase().collect()).unwrap_or_default();
+    format!("{first}{}.", chars.as_str())
+}
+
 /// A length of time, roughly, as a person says it.
 pub fn duration(seconds: u64) -> String {
     let (minutes, hours, days) = (seconds / 60, seconds / 3600, seconds / 86_400);

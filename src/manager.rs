@@ -117,6 +117,8 @@ pub struct Manager {
     /// Whether the definition of the service picked may be changed, or why
     /// not, as last looked at.
     changeable: Option<(String, Result<(), String>)>,
+    /// Whether a service may be defined, or why not.
+    creatable: Result<(), String>,
     /// What is being asked of the person before it is done.
     asking: Option<Forget>,
     /// The permissions open in the editor, by service and which.
@@ -148,6 +150,7 @@ impl Manager {
             every: Err("it has not been read yet".into()),
             every_changeable: Err("it has not been read yet".into()),
             changeable: None,
+            creatable: Err("it has not been asked yet".into()),
             asking: None,
             editing: HashSet::new(),
             looked: false,
@@ -190,6 +193,7 @@ impl Manager {
         self.from = seen.from;
         self.every = seen.every;
         self.every_changeable = seen.every_changeable;
+        self.creatable = seen.creatable;
         if seen.changeable.is_some() {
             self.changeable = seen.changeable;
         }
@@ -378,6 +382,35 @@ impl Manager {
         });
     }
 
+    /// Opens `service`'s definition, or with none a new one, in a window of
+    /// its own: this program again, which finds the desktop as this one did.
+    /// Nothing ends it when this window goes, so what is being changed there
+    /// is not lost with it. The desktop starts programs only for the shell.
+    fn definition(&mut self, service: Option<&str>) {
+        if self.window.upgrade().is_none() {
+            return;
+        }
+        let program = std::env::current_exe().unwrap_or_else(|_| "/usr/bin/services-manager".into());
+        let arguments = match service {
+            Some(service) => vec!["--definition".to_string(), service.to_string()],
+            None => vec!["--new".to_string()],
+        };
+        match std::process::Command::new(program).args(arguments).spawn() {
+            // Waited for, so that it does not linger once it has gone.
+            Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
+            Err(e) => self.said = Some(Said { text: format!("The definition could not be opened: {e}."), bad: true }),
+        }
+    }
+
+    /// The button that opens `service`'s definition: to change, or to read.
+    fn definition_button(&self, service: &str) -> String {
+        let label = match &self.changeable {
+            Some((chosen, Ok(()))) if chosen == service => "Edit definition…",
+            _ => "Definition…",
+        };
+        format!("<button type=\"button\" class=\"open\" fx-click=\"definition\" fx-value-service=\"{}\">{label}</button>", escape(service))
+    }
+
     /// Opens the editor on `which` permissions of `service`.
     fn permissions(&mut self, which: Which, service: &str) {
         let (title, open) = match which {
@@ -451,10 +484,7 @@ impl Manager {
             let which = if forget == Forget::Every { "every" } else { "service" };
             match changeable {
                 Ok(()) => format!("<button type=\"button\" fx-click=\"forget\" fx-value-which=\"{which}\" fx-value-service=\"{service_html}\">{label}</button>"),
-                Err(why) => {
-                    let why: String = why.chars().take(1).flat_map(char::to_uppercase).chain(why.chars().skip(1)).collect();
-                    format!("<button type=\"button\" disabled title=\"{}.\">{label}</button>", escape(&why))
-                }
+                Err(why) => format!("<button type=\"button\" disabled title=\"{}\">{label}</button>", escape(&words::sentence(&why))),
             }
         };
         let own = if self.from.get(service) == Some(&From::Own) {
@@ -554,6 +584,7 @@ impl Manager {
             "<menu id=\"menu-{index}\" hidden>{items}<hr>\
              <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"control\"{control}>Who may control it…</button></li>\
              <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"definition\">Who may change its definition…</button></li><hr>\
+             <li><button type=\"button\" fx-click=\"definition\">Definition…</button></li>\
              <li><button type=\"button\" fx-copy=\"service\">Copy name</button></li></menu>"
         )
     }
@@ -633,9 +664,10 @@ impl Manager {
         format!(
             "<aside class=\"details\" aria-label=\"Details\">\
              <h2>{title}</h2>{id}{description}\
-             <dl>{facts}</dl>{notes}\
+             <dl>{facts}</dl>{notes}{definition}\
              <p class=\"may\">{may}</p>{permissions}\
              </aside>",
+            definition = self.definition_button(row.service()),
             title = escape(row.title()),
             id = id.map(|id| format!("<p class=\"id\">{}</p>", escape(id))).unwrap_or_default(),
             description = description.map(|description| format!("<p class=\"description\">{}</p>", escape(description))).unwrap_or_default(),
@@ -737,6 +769,7 @@ impl Live for Manager {
              <input name=\"find\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"Find a service\" aria-label=\"Find a service\">\
              <span class=\"commands\">{buttons}</span>\
              <button type=\"button\" class=\"refresh\" fx-click=\"refresh\" fx-key=\"F5\" title=\"Look again (F5)\">Refresh</button>\
+             {new}\
              </div>\
              <div class=\"body\">\
              <div class=\"listing\" id=\"listing\" fx-columns=\"10px minmax(0, 1.3fr) 150px minmax(0, 2fr)\">\
@@ -748,6 +781,10 @@ impl Live for Manager {
              {footer}{menus}",
             next = near(1),
             previous = near(-1),
+            new = match &self.creatable {
+                Ok(()) => "<button type=\"button\" class=\"new\" fx-click=\"new\">New service…</button>".to_string(),
+                Err(why) => format!("<button type=\"button\" class=\"new\" disabled title=\"{}\">New service…</button>", escape(&words::sentence(why))),
+            },
             buttons = self.buttons(picked.as_ref()),
             details = self.details(),
             footer = self.footer(rows.len()),
@@ -787,6 +824,13 @@ impl Live for Manager {
                 }
             }
             "forget-no" => self.asking = None,
+            "definition" => {
+                if let Some(service) = service {
+                    self.pick(service.clone());
+                    self.definition(Some(&service));
+                }
+            }
+            "new" if self.creatable.is_ok() => self.definition(None),
             "refresh" => {
                 self.said = None;
                 self.refresh();
@@ -819,6 +863,7 @@ mod tests {
             every: Ok(From::BuiltIn),
             every_changeable: Ok(()),
             changeable: None,
+            creatable: Ok(()),
         });
         manager
     }
@@ -869,6 +914,7 @@ mod tests {
             every: Ok(From::BuiltIn),
             every_changeable: Ok(()),
             changeable: None,
+            creatable: Ok(()),
         });
         let html = shown(&manager, "");
         assert!(html.contains("Services whose state you may not see are not listed"));
@@ -889,6 +935,7 @@ mod tests {
             every: Err("you may not read who may control it".into()),
             every_changeable: Err("you may not change it".into()),
             changeable: None,
+            creatable: Ok(()),
         });
         pick(&mut manager, "timed");
         manager.detailed("timed", Err(Failure::Unreachable("connect: Permission denied".into())));

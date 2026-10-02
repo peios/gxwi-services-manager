@@ -1,5 +1,7 @@
 //! Services Manager: every service defined on this machine, what each is
 //! doing, and the commands that start, stop, restart, reload and reset them.
+//! With `--definition SERVICE`, or `--new`, it is instead a service's
+//! definition in a window of its own, which the list opens (`definition`).
 //!
 //! It asks peinit, on its control socket, and the registry, and it does what
 //! peinit's control interface does, on behalf of whoever is looking: nothing
@@ -11,11 +13,15 @@ use std::time::Duration;
 
 use libgxwi::{App, Surface};
 
+mod definition;
+mod fields;
 mod manager;
 mod permissions;
+mod store;
 mod system;
 mod words;
 
+use definition::Editor;
 use manager::Manager;
 
 // What this program looks like, to whatever lists it. The icon itself is
@@ -58,10 +64,31 @@ fn main() {
         }
     };
     app.stylesheet("/services-manager.css", include_str!("services-manager.css"));
-    let window = app.live("Services Manager", Manager::new());
-    let aside = Arc::downgrade(&window);
-    window.update(|manager, _| manager.window = aside.clone());
-    std::thread::spawn(move || watch(aside));
+    // A definition, in a window of its own, which the list opens.
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let editor = match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["--definition", service] => Some(Editor::open(service)),
+        ["--new"] => Some(Editor::new_service()),
+        [] => None,
+        _ => {
+            eprintln!("services-manager: usage: services-manager [--definition SERVICE | --new]");
+            std::process::exit(64);
+        }
+    };
+    if let Some(editor) = editor {
+        let window = app.live(&editor.title(), editor);
+        let (aside, closer) = (Arc::downgrade(&window), window.closer());
+        window.update(|editor, fields| {
+            editor.window = aside;
+            editor.closer = Some(closer);
+            editor.fill(fields);
+        });
+    } else {
+        let window = app.live("Services Manager", Manager::new());
+        let aside = Arc::downgrade(&window);
+        window.update(|manager, _| manager.window = aside.clone());
+        std::thread::spawn(move || watch(aside));
+    }
     if let Err(e) = app.run() {
         eprintln!("services-manager: {e}");
         std::process::exit(1);
