@@ -8,6 +8,7 @@
 //! here has more authority than they have. What is running now, service or
 //! not, is Task Manager's to show; what is defined is this.
 
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -32,12 +33,27 @@ libgxwi::icon!(b"dev.peios.services-manager");
 /// says nothing when a service changes state, so the window asks.
 const EVERY: Duration = Duration::from_secs(2);
 
+/// How long a change to the registry is given to finish before it is read:
+/// a definition saved is several values, and is read once, not once each.
+const SETTLE: Duration = Duration::from_millis(150);
+
 /// Looks at the services, and at the one picked in full, every so often,
-/// for as long as the window is there.
+/// for as long as the window is there. peinit is asked every time; the
+/// registry is read when it changes, which it says, or when what peinit
+/// lists is more than was read of it.
 fn watch(window: Weak<Surface<Manager>>) {
+    let (changed, told) = mpsc::channel();
+    let mut watched = system::watch_registry(changed);
+    let mut registry: Option<system::Registry> = None;
     loop {
         let Some((picked, chosen)) = window.upgrade().map(|window| window.look(|manager, _, _| (manager.picked(), manager.chosen()))) else { return };
-        let seen = system::look(chosen.as_deref());
+        let services = system::listing();
+        let read = match registry.take() {
+            Some(registry) if watched && registry.covers(&services, chosen.as_deref()) => registry,
+            _ => system::registry(&services, chosen.as_deref()),
+        };
+        let seen = system::seen(services, &read);
+        registry = Some(read);
         let status = picked.map(|picked| {
             let status = system::status(&picked);
             (picked, status)
@@ -50,7 +66,21 @@ fn watch(window: Weak<Surface<Manager>>) {
             }
         });
         drop(window_now);
-        std::thread::sleep(EVERY);
+        if !watched {
+            std::thread::sleep(EVERY);
+            continue;
+        }
+        // Until it is time to ask peinit again, or the registry changes,
+        // which is looked at straight away.
+        match told.recv_timeout(EVERY) {
+            Ok(()) => {
+                std::thread::sleep(SETTLE);
+                while told.try_recv().is_ok() {}
+                registry = None;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => watched = false,
+        }
     }
 }
 

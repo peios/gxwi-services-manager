@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::os::unix::net::UnixStream;
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use peinit::client::{
@@ -15,7 +16,7 @@ use peinit::client::{
     Operation, SERVICE_GENERIC_MAPPING, SERVICES_ROOT_KEY, Status, Summary,
 };
 use peios::access::AccessCheck;
-use peios::registry::{Key, KeyAccess, OpenFlags, ValueType};
+use peios::registry::{Key, KeyAccess, NotifyFilter, OpenFlags, ValueType};
 use peios::security::{AccessMask, GenericMapping, SecurityDescriptor, sddl};
 
 const EACCES: i32 = 13;
@@ -79,6 +80,7 @@ pub struct Defined {
     pub description: Option<String>,
 }
 
+#[cfg(test)]
 impl Defined {
     /// One known by its name and nothing else.
     pub fn named(name: &str) -> Defined {
@@ -109,49 +111,131 @@ impl Rights {
 }
 
 /// Looks at every service, and at whether `chosen`'s definition may be
-/// written.
+/// written: peinit and the registry both.
 pub fn look(chosen: Option<&str>) -> Seen {
-    let services = match ControlClient::connect_default() {
+    let services = listing();
+    let registry = registry(&services, chosen);
+    seen(services, &registry)
+}
+
+/// What peinit lists, or why it could not be asked.
+pub fn listing() -> Result<Vec<Summary>, Unasked> {
+    match ControlClient::connect_default() {
         Ok(mut client) => client.services().map_err(|failure| Unasked::Unreachable(unreachable(&failure))),
         // Whether it was this caller that was refused, the error says by its
         // kind, which the client's message no longer carries.
         Err(_) if UnixStream::connect(CONTROL_SOCKET_PATH).err().is_some_and(|e| e.kind() == ErrorKind::PermissionDenied) => Err(Unasked::NotAllowed),
         Err(e) => Err(Unasked::Unreachable(unreachable(&Failure::from(e)))),
-    };
-    let hidden = match (&services, defined()) {
-        (Ok(listed), Ok(defined)) => Hidden::These(
-            defined.into_iter().filter(|defined| !listed.iter().any(|service| service.service.eq_ignore_ascii_case(&defined.name))).collect(),
-        ),
-        // Nothing is the caller's to ask: every service defined is one whose
-        // state is hidden from them.
-        (Err(Unasked::NotAllowed), Ok(defined)) => Hidden::These(defined),
-        (Err(Unasked::Unreachable(_)), Ok(_)) => Hidden::These(Vec::new()),
-        (_, Err(())) => Hidden::Unknowable,
-    };
-    let listed = services.iter().flatten().map(|service| service.service.clone());
-    let unlisted = match &hidden {
-        Hidden::These(defined) => defined.iter().map(|defined| defined.name.clone()).collect(),
-        Hidden::Unknowable => Vec::new(),
-    };
-    let mut seen = Seen {
-        services: Ok(Vec::new()),
-        hidden,
+    }
+}
+
+/// What the registry says of the services: which are defined, who may
+/// control each, and what this caller may change. It costs a key or two
+/// for every service, so it is kept, and read again only when it changes
+/// (`watch_registry`) or no longer covers what peinit lists.
+pub struct Registry {
+    defined: Result<Vec<Defined>, ()>,
+    rights: HashMap<String, Rights>,
+    from: HashMap<String, From>,
+    every: Result<From, String>,
+    every_changeable: Result<(), String>,
+    changeable: Option<(String, Result<(), String>)>,
+    creatable: Result<(), String>,
+}
+
+impl Registry {
+    /// Whether it says all there is to say of what `services` lists, and of
+    /// `chosen`: a service peinit lists that it has not read, or another
+    /// chosen, is not.
+    pub fn covers(&self, services: &Result<Vec<Summary>, Unasked>, chosen: Option<&str>) -> bool {
+        self.changeable.as_ref().map(|(chosen, _)| chosen.as_str()) == chosen
+            && services.iter().flatten().all(|service| self.rights.contains_key(&service.service))
+    }
+}
+
+/// Reads the registry for every service defined and every one `services`
+/// lists, and for `chosen`.
+pub fn registry(services: &Result<Vec<Summary>, Unasked>, chosen: Option<&str>) -> Registry {
+    let defined = defined();
+    let mut registry = Registry {
         rights: HashMap::new(),
         from: HashMap::new(),
         every: every().map(|(_, from)| from),
         every_changeable: changeable(SERVICES_ROOT_KEY),
         changeable: chosen.map(|chosen| (chosen.to_string(), changeable(&format!("{SERVICES_ROOT_KEY}\\{chosen}")))),
         creatable: crate::store::creatable(),
+        defined: Err(()),
     };
-    for name in listed.chain(unlisted) {
+    let listed = services.iter().flatten().map(|service| service.service.clone());
+    let names: Vec<String> = listed.chain(defined.iter().flatten().map(|defined| defined.name.clone())).collect();
+    for name in names {
+        if registry.rights.contains_key(&name) {
+            continue;
+        }
         let (rights, from) = rights(&name);
         if let Some(from) = from {
-            seen.from.insert(name.clone(), from);
+            registry.from.insert(name.clone(), from);
         }
-        seen.rights.insert(name, rights);
+        registry.rights.insert(name, rights);
     }
-    seen.services = services;
-    seen
+    registry.defined = defined;
+    registry
+}
+
+/// What peinit lists and what the registry says, together.
+pub fn seen(services: Result<Vec<Summary>, Unasked>, registry: &Registry) -> Seen {
+    let hidden = match (&services, &registry.defined) {
+        (Ok(listed), Ok(defined)) => Hidden::These(
+            defined.iter().filter(|defined| !listed.iter().any(|service| service.service.eq_ignore_ascii_case(&defined.name))).cloned().collect(),
+        ),
+        // Nothing is the caller's to ask: every service defined is one whose
+        // state is hidden from them.
+        (Err(Unasked::NotAllowed), Ok(defined)) => Hidden::These(defined.clone()),
+        (Err(Unasked::Unreachable(_)), Ok(_)) => Hidden::These(Vec::new()),
+        (_, Err(())) => Hidden::Unknowable,
+    };
+    Seen {
+        services,
+        hidden,
+        rights: registry.rights.clone(),
+        from: registry.from.clone(),
+        every: registry.every.clone(),
+        every_changeable: registry.every_changeable.clone(),
+        changeable: registry.changeable.clone(),
+        creatable: registry.creatable.clone(),
+    }
+}
+
+/// Watches the Services key and everything under it, and says so on
+/// `changed` whenever any of it changes: a definition, who may control a
+/// service, or who may change one. False where the watch cannot be set,
+/// and then the registry is to be read every time.
+///
+/// The watch says that something changed, not what: a subtree watch tells
+/// of keys the caller may not read, by design of the registry, and what
+/// changed is read again as the caller, as any look is.
+pub fn watch_registry(changed: Sender<()>) -> bool {
+    let Ok(key) = Key::open(None, SERVICES_ROOT_KEY, KeyAccess::NOTIFY, OpenFlags::empty()) else { return false };
+    if key.notify(NotifyFilter::ALL, true).is_err() {
+        return false;
+    }
+    std::thread::spawn(move || {
+        let mut buffer = vec![0; 64 * 1024];
+        loop {
+            match key.read_watch_events(&mut buffer) {
+                Ok(events) if events.is_empty() => std::thread::sleep(Duration::from_millis(100)),
+                Ok(_) => {
+                    if changed.send(()).is_err() {
+                        return;
+                    }
+                }
+                // Gone with the sender: the window reads the registry every
+                // time from then on.
+                Err(_) => return,
+            }
+        }
+    });
+    true
 }
 
 /// What a service is doing, in full.
@@ -321,4 +405,42 @@ pub fn ask(command: Command, service: &str, mut going: impl FnMut(&Operation)) -
         }
     }
     Outcome::StillGoing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(service: &str) -> Summary {
+        Summary { service: service.into(), display_name: None, description: None, state: peinit::client::State::Active, cause: None, health: None, next_timer_at: None }
+    }
+
+    /// What was read of the registry: timed and secret defined, and the
+    /// rights of both.
+    fn read(chosen: Option<&str>) -> Registry {
+        Registry {
+            defined: Ok(vec![Defined::named("timed"), Defined::named("secret")]),
+            rights: [("timed".to_string(), Rights::Granted(0xf)), ("secret".to_string(), Rights::Granted(0))].into_iter().collect(),
+            from: HashMap::new(),
+            every: Ok(From::BuiltIn),
+            every_changeable: Ok(()),
+            changeable: chosen.map(|chosen| (chosen.to_string(), Ok(()))),
+            creatable: Ok(()),
+        }
+    }
+
+    #[test]
+    fn what_was_read_of_the_registry_is_kept_while_it_covers_what_peinit_lists() {
+        let listed = Ok(vec![summary("timed")]);
+        assert!(read(Some("timed")).covers(&listed, Some("timed")));
+        // Another chosen, or a service peinit lists that was not read, is
+        // read again.
+        assert!(!read(Some("timed")).covers(&listed, Some("secret")));
+        assert!(!read(None).covers(&Ok(vec![summary("timed"), summary("new")]), None));
+        // Kept, it is put with what peinit lists now: what it does not list
+        // is hidden from the caller.
+        let seen = seen(listed, &read(None));
+        assert_eq!(seen.hidden, Hidden::These(vec![Defined::named("secret")]));
+        assert_eq!(seen.rights.get("timed"), Some(&Rights::Granted(0xf)));
+    }
 }
