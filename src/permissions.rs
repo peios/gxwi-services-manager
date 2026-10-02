@@ -27,6 +27,9 @@ pub enum Which {
     Control,
     /// The definition key's own: who may read or change the definition.
     Definition,
+    /// The Services key's `ServiceSecurity`, or peinit's built-in default:
+    /// who may control a service without its own.
+    Every,
 }
 
 impl Which {
@@ -34,6 +37,7 @@ impl Which {
         match name {
             "control" => Some(Which::Control),
             "definition" => Some(Which::Definition),
+            "every" => Some(Which::Every),
             _ => None,
         }
     }
@@ -43,6 +47,7 @@ impl Which {
         match self {
             Which::Control => "who may control it",
             Which::Definition => "who may change its definition",
+            Which::Every => "who may control a service without its own",
         }
     }
 }
@@ -52,12 +57,54 @@ impl Which {
 pub type Apply = Box<dyn FnMut(&[u8], &[Part]) -> Result<(), String> + Send>;
 
 /// The descriptor `which` of `service`, as the editor is to be asked to
-/// show it, and what applies what it sends back.
+/// show it, and what applies what it sends back. `service` means nothing
+/// to `Every`.
 pub fn open(which: Which, service: &str, title: &str) -> Result<(Request, Apply), String> {
     match which {
         Which::Control => control(service, title),
         Which::Definition => definition(service, title),
+        Which::Every => every(),
     }
+}
+
+/// The request for a `ServiceSecurity` kept on the key at `path`, which
+/// `read` says what it is now, and what writes what comes back there.
+fn service_security(
+    path: &str,
+    object: Object,
+    cannot: &str,
+    read: impl Fn() -> Result<SecurityDescriptor, String> + Send + 'static,
+) -> Result<(Request, Apply), String> {
+    // The value is the key's, and is changed by changing that.
+    let (key, can) = match Key::open(None, path, KeyAccess::QUERY_VALUE | KeyAccess::SET_VALUE, OpenFlags::empty()) {
+        Ok(key) => (key, Can { dacl: true, ..Can::default() }),
+        Err(e) if e.raw_os_error() == Some(EACCES) => {
+            let key = Key::open(None, path, KeyAccess::QUERY_VALUE, OpenFlags::empty()).map_err(|e| unreadable(&e, "where it is kept"))?;
+            (key, Can { dacl: false, why: Some(cannot.into()), ..Can::default() })
+        }
+        Err(e) => return Err(unreadable(&e, "where it is kept")),
+    };
+    let mapping = SERVICE_GENERIC_MAPPING;
+    let request = Request {
+        object,
+        sd: read()?.as_bytes().to_vec(),
+        rights: service_rights(),
+        generic: Generic { read: mapping.read, write: mapping.write, execute: mapping.execute, all: mapping.all },
+        can,
+    };
+    let apply = move |sd: &[u8], parts: &[Part]| {
+        // What it is now, with what the person changed put in: the rest is
+        // not the editor's to write back.
+        let value = splice(read()?.as_bytes(), sd, parts)?;
+        key.set_value(b"ServiceSecurity", ValueType::BINARY, &value).call().map_err(|e| refused(&e))
+    };
+    Ok((request, Box::new(apply)))
+}
+
+fn every() -> Result<(Request, Apply), String> {
+    let object = Object { name: "Every service".into(), kind: "Services without permissions of their own".into(), container: false, children: Children::All };
+    let cannot = "You may not change the definitions of services, which is where who may control them is kept.";
+    service_security(SERVICES_ROOT_KEY, object, cannot, || system::every().map(|(descriptor, _)| descriptor))
 }
 
 /// The service's rights, by what they are called, from the most to the
@@ -74,35 +121,12 @@ fn service_rights() -> Vec<Right> {
 }
 
 fn control(service: &str, title: &str) -> Result<(Request, Apply), String> {
-    let path = format!("{SERVICES_ROOT_KEY}\\{service}");
-    // The value is the definition's, and is changed by changing that.
-    let (key, can) = match Key::open(None, &path, KeyAccess::QUERY_VALUE | KeyAccess::SET_VALUE, OpenFlags::empty()) {
-        Ok(key) => (key, Can { dacl: true, ..Can::default() }),
-        Err(e) if e.raw_os_error() == Some(EACCES) => {
-            let key = Key::open(None, &path, KeyAccess::QUERY_VALUE, OpenFlags::empty()).map_err(|e| unreadable(&e, "its definition"))?;
-            let why = "You may not change this service's definition, which is where who may control it is kept.";
-            (key, Can { dacl: false, why: Some(why.into()), ..Can::default() })
-        }
-        Err(e) => return Err(unreadable(&e, "its definition")),
-    };
-    let (descriptor, _) = system::security(service)?;
-    let mapping = SERVICE_GENERIC_MAPPING;
-    let request = Request {
-        object: Object { name: title.into(), kind: "Service".into(), container: false, children: Children::All },
-        sd: descriptor.as_bytes().to_vec(),
-        rights: service_rights(),
-        generic: Generic { read: mapping.read, write: mapping.write, execute: mapping.execute, all: mapping.all },
-        can,
-    };
+    let object = Object { name: title.into(), kind: "Service".into(), container: false, children: Children::All };
+    let cannot = "You may not change this service's definition, which is where who may control it is kept.";
     let service = service.to_string();
-    let apply = move |sd: &[u8], parts: &[Part]| {
-        // What it is now, its own or the one it takes, with what the person
-        // changed put in: the rest is not the editor's to write back.
-        let (now, _) = system::security(&service)?;
-        let value = splice(now.as_bytes(), sd, parts)?;
-        key.set_value(b"ServiceSecurity", ValueType::BINARY, &value).call().map_err(|e| refused(&e))
-    };
-    Ok((request, Box::new(apply)))
+    // Its own, or the one it takes until it has its own: applied, it is its own.
+    let path = format!("{SERVICES_ROOT_KEY}\\{service}");
+    service_security(&path, object, cannot, move || system::security(&service).map(|(descriptor, _)| descriptor))
 }
 
 fn definition(service: &str, title: &str) -> Result<(Request, Apply), String> {
@@ -155,8 +179,16 @@ fn definition(service: &str, title: &str) -> Result<(Request, Apply), String> {
 pub fn from_words(from: From) -> &'static str {
     match from {
         From::Own => "Who may control it is set for this service.",
-        From::AllServices => "Who may control it is what is set for every service, until it is set for this one.",
-        From::BuiltIn => "Who may control it is the service manager's default, until it is set for this service.",
+        From::AllServices => "Who may control it is the default set for every service, until it is set for this one.",
+        From::BuiltIn => "Who may control it is the service manager's built-in default, until it is set for this service.",
+    }
+}
+
+/// Where who may control a service without its own comes from, in words.
+pub fn every_words(from: From) -> &'static str {
+    match from {
+        From::BuiltIn => "A service without permissions of its own takes the service manager's built-in default.",
+        _ => "A service without permissions of its own takes the default set for every service.",
     }
 }
 

@@ -55,6 +55,14 @@ struct Detail {
     status: Result<Status, String>,
 }
 
+/// Permissions to take away, so that the default is what applies: a
+/// service's own, or the default set for every service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Forget {
+    Service(String),
+    Every,
+}
+
 /// A row of the listing.
 enum Row<'a> {
     Listed(&'a Summary),
@@ -102,6 +110,15 @@ pub struct Manager {
     hidden: Hidden,
     rights: HashMap<String, Rights>,
     from: HashMap<String, From>,
+    /// Where who may control a service without its own comes from.
+    every: Result<From, String>,
+    /// Whether that may be changed, or why not.
+    every_changeable: Result<(), String>,
+    /// Whether the definition of the service picked may be changed, or why
+    /// not, as last looked at.
+    changeable: Option<(String, Result<(), String>)>,
+    /// What is being asked of the person before it is done.
+    asking: Option<Forget>,
     /// The permissions open in the editor, by service and which.
     editing: HashSet<(String, Which)>,
     /// Whether peinit has been asked yet.
@@ -128,6 +145,10 @@ impl Manager {
             hidden: Hidden::These(Vec::new()),
             rights: HashMap::new(),
             from: HashMap::new(),
+            every: Err("it has not been read yet".into()),
+            every_changeable: Err("it has not been read yet".into()),
+            changeable: None,
+            asking: None,
             editing: HashSet::new(),
             looked: false,
             refused: false,
@@ -167,6 +188,17 @@ impl Manager {
         self.hidden = seen.hidden;
         self.rights = seen.rights;
         self.from = seen.from;
+        self.every = seen.every;
+        self.every_changeable = seen.every_changeable;
+        if seen.changeable.is_some() {
+            self.changeable = seen.changeable;
+        }
+    }
+
+    /// The service picked, whatever is known of it: what a look asks the
+    /// registry about.
+    pub fn chosen(&self) -> Option<String> {
+        self.picked.clone()
     }
 
     /// What `service` is doing in full, or why that is not to be had.
@@ -250,14 +282,21 @@ impl Manager {
             return;
         }
         self.detail = None;
+        self.asking = None;
         self.picked = Some(service.clone());
-        if self.picked().is_none() {
-            return;
-        }
+        // Its state, if it is the person's to ask for, and whether its
+        // definition is theirs to change, which is the registry's to say.
+        let listed = self.picked().is_some();
         let Some(window) = self.window.upgrade() else { return };
         std::thread::spawn(move || {
-            let status = system::status(&service);
-            window.update(|manager, _| manager.detailed(&service, status));
+            let seen = system::look(Some(&service));
+            let status = listed.then(|| system::status(&service));
+            window.update(|manager, _| {
+                manager.seen(seen);
+                if let Some(status) = status {
+                    manager.detailed(&service, status);
+                }
+            });
         });
     }
 
@@ -283,7 +322,7 @@ impl Manager {
             };
             let outcome = system::ask(command, &service, going);
             window.update(|manager, _| manager.asked(command, &service, outcome));
-            let seen = system::look();
+            let seen = system::look(Some(&service));
             let status = system::status(&service);
             window.update(|manager, _| {
                 manager.seen(seen);
@@ -323,8 +362,9 @@ impl Manager {
     fn refresh(&mut self) {
         let Some(window) = self.window.upgrade() else { return };
         let picked = self.picked();
+        let chosen = self.chosen();
         std::thread::spawn(move || {
-            let seen = system::look();
+            let seen = system::look(chosen.as_deref());
             let status = picked.map(|picked| {
                 let status = system::status(&picked);
                 (picked, status)
@@ -340,9 +380,13 @@ impl Manager {
 
     /// Opens the editor on `which` permissions of `service`.
     fn permissions(&mut self, which: Which, service: &str) {
-        let Some(row) = self.row(service) else { return };
-        let title = row.title().to_string();
-        let open = (service.to_string(), which);
+        let (title, open) = match which {
+            Which::Every => ("every service".to_string(), (String::new(), which)),
+            _ => match self.row(service) {
+                Some(row) => (row.title().to_string(), (service.to_string(), which)),
+                None => return,
+            },
+        };
         if self.editing.contains(&open) {
             self.said = Some(Said { text: format!("The permissions saying {} are open already for {title}.", which.says()), bad: false });
             return;
@@ -355,11 +399,12 @@ impl Manager {
             }
         };
         let looking = self.window.clone();
+        let chosen = self.chosen();
         let applied = move |sd: &[u8], parts: &[Part]| {
             apply(sd, parts)?;
             // What the person may do may have changed with it.
             if let Some(window) = looking.upgrade() {
-                let seen = system::look();
+                let seen = system::look(chosen.as_deref());
                 window.update(|manager, _| manager.seen(seen));
             }
             Ok(())
@@ -383,21 +428,97 @@ impl Manager {
     }
 
     /// The buttons that open `service`'s permissions, and where who may
-    /// control it comes from.
+    /// control it comes from; and the default every service without its
+    /// own takes, with the buttons that open and forget that.
     fn permission_buttons(&self, service: &str) -> String {
         let (from, control) = match (self.from.get(service), self.rights_of(service)) {
             (Some(from), _) => (permissions::from_words(*from).to_string(), String::new()),
             (None, Rights::Unknown(why)) => (format!("Who may control it could not be read: {why}."), " disabled".to_string()),
             (None, Rights::Granted(_)) => (String::new(), String::new()),
         };
+        let service_html = escape(service);
+        // A button that sets something back to the default, asked about
+        // first, and offered where it may be done.
+        let forget = |forget: Forget, label: &str, changeable: Result<(), String>, question: String, keep: &str| {
+            if self.asking.as_ref() == Some(&forget) {
+                return format!(
+                    "<div class=\"asking\" role=\"group\" aria-label=\"{label}\"><p>{question}</p>\
+                     <button type=\"button\" fx-click=\"forget-yes\" fx-value-service=\"{service_html}\" fx-autofocus>{label}</button>\
+                     <button type=\"button\" fx-click=\"forget-no\" fx-value-service=\"{service_html}\">{keep}</button></div>",
+                    question = escape(&question),
+                );
+            }
+            let which = if forget == Forget::Every { "every" } else { "service" };
+            match changeable {
+                Ok(()) => format!("<button type=\"button\" fx-click=\"forget\" fx-value-which=\"{which}\" fx-value-service=\"{service_html}\">{label}</button>"),
+                Err(why) => {
+                    let why: String = why.chars().take(1).flat_map(char::to_uppercase).chain(why.chars().skip(1)).collect();
+                    format!("<button type=\"button\" disabled title=\"{}.\">{label}</button>", escape(&why))
+                }
+            }
+        };
+        let own = if self.from.get(service) == Some(&From::Own) {
+            let changeable = match &self.changeable {
+                Some((chosen, changeable)) if chosen == service => changeable.clone(),
+                _ => Err("whether you may has not been found out yet".into()),
+            };
+            let takes = match self.every {
+                Ok(From::AllServices) => "the default set for every service",
+                _ => "the service manager's built-in default",
+            };
+            let title = self.row(service).map_or_else(|| service.to_string(), |row| row.title().to_string());
+            forget(Forget::Service(service.to_string()), "Use the default", changeable, format!("{title} will take {takes}. Who may control it as set for it now will be lost."), "Keep its own")
+        } else {
+            String::new()
+        };
+        let (every, every_set) = match &self.every {
+            Ok(from) => (permissions::every_words(*from).to_string(), *from == From::AllServices),
+            Err(why) => (format!("What a service without permissions of its own takes could not be read: {why}."), false),
+        };
+        let builtin = if every_set {
+            let question = "Every service without permissions of its own will take the service manager's built-in default, and the default set for every service will be lost.".to_string();
+            forget(Forget::Every, "Use the built-in default", self.every_changeable.clone(), question, "Keep it")
+        } else {
+            String::new()
+        };
+        let every_off = if self.every.is_err() { " disabled" } else { "" };
         format!(
             "<section class=\"permissions\" aria-label=\"Permissions\"><p class=\"note\">{from}</p>\
-             <button type=\"button\" fx-click=\"permissions\" fx-value-which=\"control\" fx-value-service=\"{service}\"{control}>Who may control it…</button>\
-             <button type=\"button\" fx-click=\"permissions\" fx-value-which=\"definition\" fx-value-service=\"{service}\">Who may change its definition…</button>\
+             <div class=\"together\"><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"control\" fx-value-service=\"{service_html}\"{control}>Who may control it…</button>{own}</div>\
+             <button type=\"button\" fx-click=\"permissions\" fx-value-which=\"definition\" fx-value-service=\"{service_html}\">Who may change its definition…</button>\
+             </section>\
+             <section class=\"permissions every\" aria-labelledby=\"every\"><h3 id=\"every\">Every service</h3><p class=\"note\">{every}</p>\
+             <div class=\"together\"><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"every\" fx-value-service=\"{service_html}\"{every_off}>Default permissions…</button>{builtin}</div>\
              </section>",
             from = escape(&from),
-            service = escape(service),
+            every = escape(&every),
         )
+    }
+
+    /// Takes away what `forget` names, so that the default applies, and
+    /// looks again.
+    fn forget(&mut self, forget: Forget) {
+        self.asking = None;
+        let Some(window) = self.window.upgrade() else { return };
+        let chosen = self.chosen();
+        std::thread::spawn(move || {
+            let (service, said) = match &forget {
+                Forget::Service(service) => (Some(service.as_str()), "now takes the default"),
+                Forget::Every => (None, ""),
+            };
+            let done = system::forget(service);
+            let seen = system::look(chosen.as_deref());
+            window.update(|manager, _| {
+                let title = service.map(|service| manager.row(service).map_or_else(|| service.to_string(), |row| row.title().to_string()));
+                manager.said = Some(match (done, title) {
+                    (Ok(()), Some(title)) => Said { text: format!("{title} {said}."), bad: false },
+                    (Ok(()), None) => Said { text: "Every service without permissions of its own now takes the service manager's built-in default.".into(), bad: false },
+                    (Err(why), Some(title)) => Said { text: format!("{title} could not be set back to the default: {why}."), bad: true },
+                    (Err(why), None) => Said { text: format!("The default for every service could not be taken away: {why}."), bad: true },
+                });
+                manager.seen(seen);
+            });
+        });
     }
 
     /// The buttons for `row`'s commands, each pressable or saying why not.
@@ -653,6 +774,19 @@ impl Live for Manager {
                     self.permissions(which, &service);
                 }
             }
+            "forget" => {
+                self.asking = match (value["which"].as_str(), service) {
+                    (Some("every"), _) => Some(Forget::Every),
+                    (Some("service"), Some(service)) if self.from.get(&service) == Some(&From::Own) => Some(Forget::Service(service)),
+                    _ => None,
+                };
+            }
+            "forget-yes" => {
+                if let Some(forget) = self.asking.take() {
+                    self.forget(forget);
+                }
+            }
+            "forget-no" => self.asking = None,
             "refresh" => {
                 self.said = None;
                 self.refresh();
@@ -682,6 +816,9 @@ mod tests {
             hidden: Hidden::These(vec![Defined::named("secret")]),
             rights: rights.iter().cloned().map(|(name, rights)| (name.to_string(), rights)).collect(),
             from: rights.iter().filter(|(_, rights)| matches!(rights, Rights::Granted(_))).map(|(name, _)| (name.to_string(), From::BuiltIn)).collect(),
+            every: Ok(From::BuiltIn),
+            every_changeable: Ok(()),
+            changeable: None,
         });
         manager
     }
@@ -724,7 +861,15 @@ mod tests {
     #[test]
     fn where_the_registry_cannot_be_read_it_says_some_may_be_missing() {
         let mut manager = manager(&[]);
-        manager.seen(Seen { services: Ok(Vec::new()), hidden: Hidden::Unknowable, rights: HashMap::new(), from: HashMap::new() });
+        manager.seen(Seen {
+            services: Ok(Vec::new()),
+            hidden: Hidden::Unknowable,
+            rights: HashMap::new(),
+            from: HashMap::new(),
+            every: Ok(From::BuiltIn),
+            every_changeable: Ok(()),
+            changeable: None,
+        });
         let html = shown(&manager, "");
         assert!(html.contains("Services whose state you may not see are not listed"));
         assert!(html.contains("There are no services you may see."));
@@ -741,6 +886,9 @@ mod tests {
             ]),
             rights: [("timed".to_string(), Rights::Granted(0xf))].into_iter().collect(),
             from: HashMap::new(),
+            every: Err("you may not read who may control it".into()),
+            every_changeable: Err("you may not change it".into()),
+            changeable: None,
         });
         pick(&mut manager, "timed");
         manager.detailed("timed", Err(Failure::Unreachable("connect: Permission denied".into())));
@@ -811,6 +959,43 @@ mod tests {
         // A hidden service's are offered too: they are the registry's, not peinit's.
         pick(&mut manager, "secret");
         assert!(shown(&manager, "").contains("fx-value-service=\"secret\">Who may change its definition…"));
+    }
+
+    #[test]
+    fn what_was_set_goes_back_to_the_default_once_the_person_says_so() {
+        let mut manager = manager(&[("timed", Rights::Granted(0xf)), ("sshd", Rights::Granted(0xf))]);
+        manager.from.insert("timed".into(), From::Own);
+        pick(&mut manager, "timed");
+        // Whether its definition may be changed is not known yet: the
+        // button says so, unpressable.
+        assert!(shown(&manager, "").contains("disabled title=\"Whether you may has not been found out yet.\">Use the default</button>"));
+        manager.changeable = Some(("timed".into(), Ok(())));
+        let html = shown(&manager, "");
+        assert!(html.contains("fx-click=\"forget\" fx-value-which=\"service\" fx-value-service=\"timed\">Use the default</button>"));
+        // Pressed, it asks, saying what it will take; kept, nothing is done.
+        manager.event("forget", &serde_json::json!({ "which": "service", "service": "timed" }), &mut Fields::default());
+        let html = shown(&manager, "");
+        assert!(html.contains("Time client will take the service manager's built-in default. Who may control it as set for it now will be lost."));
+        assert!(html.contains("fx-click=\"forget-yes\"") && html.contains(">Keep its own</button>"));
+        manager.event("forget-no", &serde_json::json!({}), &mut Fields::default());
+        assert_eq!(manager.asking, None);
+        // One taking the default already has nothing to go back to.
+        pick(&mut manager, "sshd");
+        assert!(!shown(&manager, "").contains("Use the default</button>"));
+        // Every service: opened from any, and set back to the built-in default
+        // only where something is set, and the person may.
+        let html = shown(&manager, "");
+        assert!(html.contains("A service without permissions of its own takes the service manager's built-in default."));
+        assert!(html.contains("fx-value-which=\"every\" fx-value-service=\"sshd\">Default permissions…</button>"));
+        assert!(!html.contains("Use the built-in default"));
+        manager.every = Ok(From::AllServices);
+        manager.every_changeable = Err("you may not change it".into());
+        let html = shown(&manager, "");
+        assert!(html.contains("takes the default set for every service."));
+        assert!(html.contains("disabled title=\"You may not change it.\">Use the built-in default</button>"));
+        // Asked for anyway, by a service with nothing of its own, nothing is asked.
+        manager.event("forget", &serde_json::json!({ "which": "service", "service": "sshd" }), &mut Fields::default());
+        assert_eq!(manager.asking, None);
     }
 
     #[test]

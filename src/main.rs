@@ -30,8 +30,8 @@ const EVERY: Duration = Duration::from_secs(2);
 /// for as long as the window is there.
 fn watch(window: Weak<Surface<Manager>>) {
     loop {
-        let Some(picked) = window.upgrade().map(|window| window.look(|manager, _, _| manager.picked())) else { return };
-        let seen = system::look();
+        let Some((picked, chosen)) = window.upgrade().map(|window| window.look(|manager, _, _| (manager.picked(), manager.chosen()))) else { return };
+        let seen = system::look(chosen.as_deref());
         let status = picked.map(|picked| {
             let status = system::status(&picked);
             (picked, status)

@@ -35,6 +35,15 @@ pub struct Seen {
     /// Where who may control each service comes from, where that could be
     /// read.
     pub from: HashMap<String, From>,
+    /// Where who may control a service without its own comes from: the
+    /// Services key's value, or peinit's built-in default.
+    pub every: Result<From, String>,
+    /// Whether that can be changed, which is whether the Services key may
+    /// be written, or why not.
+    pub every_changeable: Result<(), String>,
+    /// Whether the service looked at in particular has a definition that may
+    /// be written, or why not.
+    pub changeable: Option<(String, Result<(), String>)>,
 }
 
 /// Why peinit was not asked.
@@ -97,7 +106,9 @@ impl Rights {
     }
 }
 
-pub fn look() -> Seen {
+/// Looks at every service, and at whether `chosen`'s definition may be
+/// written.
+pub fn look(chosen: Option<&str>) -> Seen {
     let services = match ControlClient::connect_default() {
         Ok(mut client) => client.services().map_err(|failure| Unasked::Unreachable(unreachable(&failure))),
         // Whether it was this caller that was refused, the error says by its
@@ -120,7 +131,15 @@ pub fn look() -> Seen {
         Hidden::These(defined) => defined.iter().map(|defined| defined.name.clone()).collect(),
         Hidden::Unknowable => Vec::new(),
     };
-    let mut seen = Seen { services: Ok(Vec::new()), hidden, rights: HashMap::new(), from: HashMap::new() };
+    let mut seen = Seen {
+        services: Ok(Vec::new()),
+        hidden,
+        rights: HashMap::new(),
+        from: HashMap::new(),
+        every: every().map(|(_, from)| from),
+        every_changeable: changeable(SERVICES_ROOT_KEY),
+        changeable: chosen.map(|chosen| (chosen.to_string(), changeable(&format!("{SERVICES_ROOT_KEY}\\{chosen}")))),
+    };
     for name in listed.chain(unlisted) {
         let (rights, from) = rights(&name);
         if let Some(from) = from {
@@ -195,26 +214,58 @@ pub enum From {
 }
 
 /// The descriptor peinit checks commands on `service` against (§4.6): its
-/// own, or else the Services key's, or else peinit's built-in default.
+/// own, or else the one every service without its own takes.
 pub fn security(service: &str) -> Result<(SecurityDescriptor, From), String> {
-    for (path, from) in [(format!("{SERVICES_ROOT_KEY}\\{service}"), From::Own), (SERVICES_ROOT_KEY.to_string(), From::AllServices)] {
-        let key = match Key::open(None, &path, KeyAccess::QUERY_VALUE, OpenFlags::empty()) {
-            Ok(key) => key,
-            Err(e) if e.raw_os_error() == Some(EACCES) => return Err("you may not read who may control it".into()),
-            Err(e) => return Err(format!("who may control it could not be read ({e})")),
-        };
-        match key.query_value(b"ServiceSecurity", None) {
-            Ok(value) => {
-                let descriptor = SecurityDescriptor::from_validated_bytes(value.data).map_err(|e| format!("who may control it is not readable ({e})"))?;
-                return Ok((descriptor, from));
-            }
-            Err(e) if e.raw_os_error() == Some(ENOENT) => continue,
-            Err(e) if e.raw_os_error() == Some(EACCES) => return Err("you may not read who may control it".into()),
-            Err(e) => return Err(format!("who may control it could not be read ({e})")),
-        }
+    match stored(&format!("{SERVICES_ROOT_KEY}\\{service}"))? {
+        Some(descriptor) => Ok((descriptor, From::Own)),
+        None => every(),
+    }
+}
+
+/// The descriptor a service without its own takes: the Services key's, or
+/// else peinit's built-in default.
+pub fn every() -> Result<(SecurityDescriptor, From), String> {
+    if let Some(descriptor) = stored(SERVICES_ROOT_KEY)? {
+        return Ok((descriptor, From::AllServices));
     }
     let descriptor = sddl::parse(DEFAULT_SERVICE_SECURITY_SDDL).map_err(|e| format!("peinit's default could not be read ({e})"))?;
     Ok((descriptor, From::BuiltIn))
+}
+
+/// The `ServiceSecurity` the key at `path` holds, if it holds one.
+fn stored(path: &str) -> Result<Option<SecurityDescriptor>, String> {
+    let key = match Key::open(None, path, KeyAccess::QUERY_VALUE, OpenFlags::empty()) {
+        Ok(key) => key,
+        Err(e) if e.raw_os_error() == Some(EACCES) => return Err("you may not read who may control it".into()),
+        Err(e) => return Err(format!("who may control it could not be read ({e})")),
+    };
+    match key.query_value(b"ServiceSecurity", None) {
+        Ok(value) => SecurityDescriptor::from_validated_bytes(value.data).map(Some).map_err(|e| format!("who may control it is not readable ({e})")),
+        Err(e) if e.raw_os_error() == Some(ENOENT) => Ok(None),
+        Err(e) if e.raw_os_error() == Some(EACCES) => Err("you may not read who may control it".into()),
+        Err(e) => Err(format!("who may control it could not be read ({e})")),
+    }
+}
+
+/// Whether the key at `path` may be written, asked of the registry, or why
+/// not.
+fn changeable(path: &str) -> Result<(), String> {
+    match Key::open(None, path, KeyAccess::QUERY_VALUE | KeyAccess::SET_VALUE, OpenFlags::empty()) {
+        Ok(_) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(EACCES) => Err("you may not change it".into()),
+        Err(e) => Err(format!("whether you may change it could not be found out ({e})")),
+    }
+}
+
+/// Takes away the `ServiceSecurity` of `service`'s definition, or with
+/// none, the Services key's, so that what it was covering takes the
+/// default again.
+pub fn forget(service: Option<&str>) -> Result<(), String> {
+    let path = service.map_or_else(|| SERVICES_ROOT_KEY.to_string(), |service| format!("{SERVICES_ROOT_KEY}\\{service}"));
+    let key = Key::open(None, &path, KeyAccess::SET_VALUE, OpenFlags::empty()).map_err(|e| {
+        if e.raw_os_error() == Some(EACCES) { "you are not allowed to".to_string() } else { e.to_string() }
+    })?;
+    key.delete_value(b"ServiceSecurity", None, None).map_err(|e| e.to_string())
 }
 
 /// How a command came out.
