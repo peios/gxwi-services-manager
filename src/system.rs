@@ -32,6 +32,9 @@ pub struct Seen {
     pub hidden: Hidden,
     /// What this caller may do with each service, listed or hidden, by name.
     pub rights: HashMap<String, Rights>,
+    /// Where who may control each service comes from, where that could be
+    /// read.
+    pub from: HashMap<String, From>,
 }
 
 /// Why peinit was not asked.
@@ -117,8 +120,16 @@ pub fn look() -> Seen {
         Hidden::These(defined) => defined.iter().map(|defined| defined.name.clone()).collect(),
         Hidden::Unknowable => Vec::new(),
     };
-    let rights = listed.chain(unlisted).map(|name| (rights(&name), name)).map(|(rights, name)| (name, rights)).collect();
-    Seen { services, hidden, rights }
+    let mut seen = Seen { services: Ok(Vec::new()), hidden, rights: HashMap::new(), from: HashMap::new() };
+    for name in listed.chain(unlisted) {
+        let (rights, from) = rights(&name);
+        if let Some(from) = from {
+            seen.from.insert(name.clone(), from);
+        }
+        seen.rights.insert(name, rights);
+    }
+    seen.services = services;
+    seen
 }
 
 /// What a service is doing, in full.
@@ -156,22 +167,37 @@ fn string(key: &Key, name: &[u8]) -> Option<String> {
     String::from_utf8(text.to_vec()).ok()
 }
 
-pub fn rights(service: &str) -> Rights {
-    let descriptor = match security(service) {
-        Ok(descriptor) => descriptor,
-        Err(why) => return Rights::Unknown(why),
+/// What this caller may do with `service`, and where the descriptor that
+/// says so comes from, if it could be read.
+pub fn rights(service: &str) -> (Rights, Option<From>) {
+    let (descriptor, from) = match security(service) {
+        Ok(found) => found,
+        Err(why) => return (Rights::Unknown(why), None),
     };
     let mapping = GenericMapping::new(SERVICE_GENERIC_MAPPING.read, SERVICE_GENERIC_MAPPING.write, SERVICE_GENERIC_MAPPING.execute, SERVICE_GENERIC_MAPPING.all);
-    match AccessCheck::new(&descriptor, AccessMask::MAXIMUM_ALLOWED, mapping).check() {
+    let rights = match AccessCheck::new(&descriptor, AccessMask::MAXIMUM_ALLOWED, mapping).check() {
         Ok(decision) => Rights::Granted(decision.granted.bits() & SERVICE_GENERIC_MAPPING.all),
         Err(e) => Rights::Unknown(format!("they could not be checked ({e})")),
-    }
+    };
+    (rights, Some(from))
+}
+
+/// Where the descriptor peinit checks a service's commands against comes
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum From {
+    /// Its definition's own `ServiceSecurity`.
+    Own,
+    /// The Services key's, which every service without its own takes.
+    AllServices,
+    /// peinit's built-in default, there being neither.
+    BuiltIn,
 }
 
 /// The descriptor peinit checks commands on `service` against (§4.6): its
 /// own, or else the Services key's, or else peinit's built-in default.
-fn security(service: &str) -> Result<SecurityDescriptor, String> {
-    for path in [format!("{SERVICES_ROOT_KEY}\\{service}"), SERVICES_ROOT_KEY.to_string()] {
+pub fn security(service: &str) -> Result<(SecurityDescriptor, From), String> {
+    for (path, from) in [(format!("{SERVICES_ROOT_KEY}\\{service}"), From::Own), (SERVICES_ROOT_KEY.to_string(), From::AllServices)] {
         let key = match Key::open(None, &path, KeyAccess::QUERY_VALUE, OpenFlags::empty()) {
             Ok(key) => key,
             Err(e) if e.raw_os_error() == Some(EACCES) => return Err("you may not read who may control it".into()),
@@ -179,14 +205,16 @@ fn security(service: &str) -> Result<SecurityDescriptor, String> {
         };
         match key.query_value(b"ServiceSecurity", None) {
             Ok(value) => {
-                return SecurityDescriptor::from_validated_bytes(value.data).map_err(|e| format!("who may control it is not readable ({e})"));
+                let descriptor = SecurityDescriptor::from_validated_bytes(value.data).map_err(|e| format!("who may control it is not readable ({e})"))?;
+                return Ok((descriptor, from));
             }
             Err(e) if e.raw_os_error() == Some(ENOENT) => continue,
             Err(e) if e.raw_os_error() == Some(EACCES) => return Err("you may not read who may control it".into()),
             Err(e) => return Err(format!("who may control it could not be read ({e})")),
         }
     }
-    sddl::parse(DEFAULT_SERVICE_SECURITY_SDDL).map_err(|e| format!("peinit's default could not be read ({e})"))
+    let descriptor = sddl::parse(DEFAULT_SERVICE_SECURITY_SDDL).map_err(|e| format!("peinit's default could not be read ({e})"))?;
+    Ok((descriptor, From::BuiltIn))
 }
 
 /// How a command came out.

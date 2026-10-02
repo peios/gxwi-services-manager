@@ -18,14 +18,22 @@
 //! A COMMAND is asked for and not waited on: the window follows the
 //! operation it started and says what came of it, and carries on being a
 //! window meanwhile. One command at a time per service.
+//!
+//! PERMISSIONS, who may control a service and who may change its
+//! definition, open in gxwi-sd-editor, a dialog of its own. The window reads
+//! the descriptor, says whether the person can change it, and applies what
+//! comes back (`permissions`); then it looks again, since what the person
+//! may do may have changed with it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Weak;
 
+use gxwi_sd_editor::Part;
 use libgxwi::{Facts, Fields, Live, Surface, Value, escape};
 use peinit::client::{Admission, Command, Failure, State, Status, Summary, admission};
 
-use crate::system::{self, Defined, Hidden, Outcome, Rights, Seen, Unasked};
+use crate::permissions::{self, Which};
+use crate::system::{self, Defined, From, Hidden, Outcome, Rights, Seen, Unasked};
 use crate::words;
 
 /// What is said where peinit's control socket turns the person away.
@@ -93,6 +101,9 @@ pub struct Manager {
     services: Vec<Summary>,
     hidden: Hidden,
     rights: HashMap<String, Rights>,
+    from: HashMap<String, From>,
+    /// The permissions open in the editor, by service and which.
+    editing: HashSet<(String, Which)>,
     /// Whether peinit has been asked yet.
     looked: bool,
     /// Whether peinit's control socket turned the person away: then nothing
@@ -116,6 +127,8 @@ impl Manager {
             services: Vec::new(),
             hidden: Hidden::These(Vec::new()),
             rights: HashMap::new(),
+            from: HashMap::new(),
+            editing: HashSet::new(),
             looked: false,
             refused: false,
             trouble: None,
@@ -153,6 +166,7 @@ impl Manager {
         }
         self.hidden = seen.hidden;
         self.rights = seen.rights;
+        self.from = seen.from;
     }
 
     /// What `service` is doing in full, or why that is not to be had.
@@ -324,6 +338,68 @@ impl Manager {
         });
     }
 
+    /// Opens the editor on `which` permissions of `service`.
+    fn permissions(&mut self, which: Which, service: &str) {
+        let Some(row) = self.row(service) else { return };
+        let title = row.title().to_string();
+        let open = (service.to_string(), which);
+        if self.editing.contains(&open) {
+            self.said = Some(Said { text: format!("The permissions saying {} are open already for {title}.", which.says()), bad: false });
+            return;
+        }
+        let (request, mut apply) = match permissions::open(which, service, &title) {
+            Ok(opened) => opened,
+            Err(why) => {
+                self.said = Some(Said { text: format!("The permissions of {title} could not be opened: {why}."), bad: true });
+                return;
+            }
+        };
+        let looking = self.window.clone();
+        let applied = move |sd: &[u8], parts: &[Part]| {
+            apply(sd, parts)?;
+            // What the person may do may have changed with it.
+            if let Some(window) = looking.upgrade() {
+                let seen = system::look();
+                window.update(|manager, _| manager.seen(seen));
+            }
+            Ok(())
+        };
+        let window = self.window.clone();
+        let closed = open.clone();
+        let done = move || {
+            if let Some(window) = window.upgrade() {
+                window.update(|manager, _| {
+                    manager.editing.remove(&closed);
+                });
+            }
+        };
+        match gxwi_sd_editor::edit(&request, applied, done) {
+            Ok(()) => {
+                self.editing.insert(open);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.said = Some(Said { text: "The permissions editor is not installed.".into(), bad: true }),
+            Err(e) => self.said = Some(Said { text: format!("The permissions editor could not be started: {e}."), bad: true }),
+        }
+    }
+
+    /// The buttons that open `service`'s permissions, and where who may
+    /// control it comes from.
+    fn permission_buttons(&self, service: &str) -> String {
+        let (from, control) = match (self.from.get(service), self.rights_of(service)) {
+            (Some(from), _) => (permissions::from_words(*from).to_string(), String::new()),
+            (None, Rights::Unknown(why)) => (format!("Who may control it could not be read: {why}."), " disabled".to_string()),
+            (None, Rights::Granted(_)) => (String::new(), String::new()),
+        };
+        format!(
+            "<section class=\"permissions\" aria-label=\"Permissions\"><p class=\"note\">{from}</p>\
+             <button type=\"button\" fx-click=\"permissions\" fx-value-which=\"control\" fx-value-service=\"{service}\"{control}>Who may control it…</button>\
+             <button type=\"button\" fx-click=\"permissions\" fx-value-which=\"definition\" fx-value-service=\"{service}\">Who may change its definition…</button>\
+             </section>",
+            from = escape(&from),
+            service = escape(service),
+        )
+    }
+
     /// The buttons for `row`'s commands, each pressable or saying why not.
     fn buttons(&self, row: Option<&Row>) -> String {
         COMMANDS
@@ -352,7 +428,13 @@ impl Manager {
                 format!("<li><button type=\"button\" fx-click=\"command\" fx-value-command=\"{}\"{disabled}>{}</button></li>", words::verb(command), words::command(command))
             })
             .collect();
-        format!("<menu id=\"menu-{index}\" hidden>{items}<hr><li><button type=\"button\" fx-copy=\"service\">Copy name</button></li></menu>")
+        let control = if self.from.contains_key(row.service()) { "" } else { " disabled" };
+        format!(
+            "<menu id=\"menu-{index}\" hidden>{items}<hr>\
+             <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"control\"{control}>Who may control it…</button></li>\
+             <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"definition\">Who may change its definition…</button></li><hr>\
+             <li><button type=\"button\" fx-copy=\"service\">Copy name</button></li></menu>"
+        )
     }
 
     /// What may be done with `service`, in a sentence.
@@ -431,12 +513,13 @@ impl Manager {
             "<aside class=\"details\" aria-label=\"Details\">\
              <h2>{title}</h2>{id}{description}\
              <dl>{facts}</dl>{notes}\
-             <p class=\"may\">{may}</p>\
+             <p class=\"may\">{may}</p>{permissions}\
              </aside>",
             title = escape(row.title()),
             id = id.map(|id| format!("<p class=\"id\">{}</p>", escape(id))).unwrap_or_default(),
             description = description.map(|description| format!("<p class=\"description\">{}</p>", escape(description))).unwrap_or_default(),
             may = escape(&may),
+            permissions = self.permission_buttons(row.service()),
         )
     }
 
@@ -564,6 +647,12 @@ impl Live for Manager {
                     self.command(command, &service);
                 }
             }
+            "permissions" => {
+                if let (Some(which), Some(service)) = (value["which"].as_str().and_then(Which::named), service) {
+                    self.pick(service.clone());
+                    self.permissions(which, &service);
+                }
+            }
             "refresh" => {
                 self.said = None;
                 self.refresh();
@@ -592,6 +681,7 @@ mod tests {
             ]),
             hidden: Hidden::These(vec![Defined::named("secret")]),
             rights: rights.iter().cloned().map(|(name, rights)| (name.to_string(), rights)).collect(),
+            from: rights.iter().filter(|(_, rights)| matches!(rights, Rights::Granted(_))).map(|(name, _)| (name.to_string(), From::BuiltIn)).collect(),
         });
         manager
     }
@@ -634,7 +724,7 @@ mod tests {
     #[test]
     fn where_the_registry_cannot_be_read_it_says_some_may_be_missing() {
         let mut manager = manager(&[]);
-        manager.seen(Seen { services: Ok(Vec::new()), hidden: Hidden::Unknowable, rights: HashMap::new() });
+        manager.seen(Seen { services: Ok(Vec::new()), hidden: Hidden::Unknowable, rights: HashMap::new(), from: HashMap::new() });
         let html = shown(&manager, "");
         assert!(html.contains("Services whose state you may not see are not listed"));
         assert!(html.contains("There are no services you may see."));
@@ -650,6 +740,7 @@ mod tests {
                 Defined::named("sshd"),
             ]),
             rights: [("timed".to_string(), Rights::Granted(0xf))].into_iter().collect(),
+            from: HashMap::new(),
         });
         pick(&mut manager, "timed");
         manager.detailed("timed", Err(Failure::Unreachable("connect: Permission denied".into())));
@@ -699,6 +790,27 @@ mod tests {
         let html = shown(&manager, "");
         assert!(bar(&html).iter().any(|(label, pressable)| label == "Stop" && *pressable));
         assert!(html.contains("Whether you may control it is not known: you may not read who may control it."));
+    }
+
+    #[test]
+    fn the_permissions_open_from_the_details_and_say_where_they_come_from() {
+        let mut manager = manager(&[("timed", Rights::Granted(0xf)), ("sshd", Rights::Unknown("you may not read who may control it".into()))]);
+        manager.from.insert("timed".into(), From::Own);
+        pick(&mut manager, "timed");
+        let html = shown(&manager, "");
+        assert!(html.contains("Who may control it is set for this service."));
+        assert!(html.contains("fx-value-which=\"control\" fx-value-service=\"timed\">Who may control it…</button>"));
+        assert!(html.contains("fx-value-which=\"definition\" fx-value-service=\"timed\">Who may change its definition…</button>"));
+        // Where who may control it cannot be read, that is not offered, and
+        // why is said; the definition's own may still be.
+        pick(&mut manager, "sshd");
+        let html = shown(&manager, "");
+        assert!(html.contains("Who may control it could not be read: you may not read who may control it."));
+        assert!(html.contains("fx-value-service=\"sshd\" disabled>Who may control it…"));
+        assert!(html.contains("fx-value-service=\"sshd\">Who may change its definition…"));
+        // A hidden service's are offered too: they are the registry's, not peinit's.
+        pick(&mut manager, "secret");
+        assert!(shown(&manager, "").contains("fx-value-service=\"secret\">Who may change its definition…"));
     }
 
     #[test]

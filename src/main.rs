@@ -12,6 +12,7 @@ use std::time::Duration;
 use libgxwi::{App, Surface};
 
 mod manager;
+mod permissions;
 mod system;
 mod words;
 
