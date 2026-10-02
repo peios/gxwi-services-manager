@@ -127,9 +127,12 @@ impl Manager {
         }
     }
 
-    /// The service picked, for whoever looks again to ask about.
+    /// The service picked, for whoever looks again to ask about, if its state
+    /// is the person's to ask for. One whose state is hidden is not asked
+    /// about: peinit records every refusal, and a window left open on one
+    /// would be refused every time it looked.
     pub fn picked(&self) -> Option<String> {
-        self.picked.clone()
+        self.picked.clone().filter(|picked| self.services.iter().any(|service| &service.service == picked))
     }
 
     /// What a look at the services found.
@@ -234,6 +237,9 @@ impl Manager {
         }
         self.detail = None;
         self.picked = Some(service.clone());
+        if self.picked().is_none() {
+            return;
+        }
         let Some(window) = self.window.upgrade() else { return };
         std::thread::spawn(move || {
             let status = system::status(&service);
@@ -277,7 +283,12 @@ impl Manager {
         self.working.remove(service);
         let title = self.row(service).map_or_else(|| service.to_string(), |row| row.title().to_string());
         let (text, bad) = match outcome {
-            Outcome::Done => (format!("{title} was {}.", words::done(command)), false),
+            // A reload nothing confirmed was sent, and may or may not have
+            // been done: peinit says which as what it came to.
+            Outcome::Done(Some(result)) if command == Command::Reload && result.contains("advisory") => {
+                (format!("{title} was asked to reload, and did not say whether it had."), false)
+            }
+            Outcome::Done(_) => (format!("{title} was {}.", words::done(command)), false),
             Outcome::Answered(accepted) => (format!("{title} is {} now.", words::state(accepted.state).to_lowercase()), false),
             Outcome::Failed(why) => (format!("{title} could not be {}: {why}", words::done(command)), true),
             Outcome::Refused { code, message } => (
@@ -297,7 +308,7 @@ impl Manager {
     /// Looks again now, rather than when the next look is due.
     fn refresh(&mut self) {
         let Some(window) = self.window.upgrade() else { return };
-        let picked = self.picked.clone();
+        let picked = self.picked();
         std::thread::spawn(move || {
             let seen = system::look();
             let status = picked.map(|picked| {
@@ -693,8 +704,12 @@ mod tests {
     #[test]
     fn what_came_of_a_command_is_said_in_words() {
         let mut manager = manager(&[("timed", Rights::Granted(0xf))]);
-        manager.asked(Command::Restart, "timed", Outcome::Done);
+        manager.asked(Command::Restart, "timed", Outcome::Done(None));
         assert_eq!(manager.said, Some(Said { text: "Time client was restarted.".into(), bad: false }));
+        manager.asked(Command::Reload, "timed", Outcome::Done(Some("reload signal confirmed".into())));
+        assert_eq!(manager.said, Some(Said { text: "Time client was reloaded.".into(), bad: false }));
+        manager.asked(Command::Reload, "timed", Outcome::Done(Some("reload signal advisory: detection window expired".into())));
+        assert_eq!(manager.said, Some(Said { text: "Time client was asked to reload, and did not say whether it had.".into(), bad: false }));
         manager.asked(Command::Stop, "timed", Outcome::Refused { code: "ACCESS_DENIED".into(), message: "access denied".into() });
         assert_eq!(manager.said, Some(Said { text: "You are not allowed to stop Time client.".into(), bad: true }));
         manager.asked(Command::Start, "sshd", Outcome::Failed("its program could not be found".into()));
@@ -724,9 +739,10 @@ mod tests {
         assert!(html.contains("<dt>Runs as</dt><dd>Local Service</dd>"));
         assert!(html.contains("<dt>Running for</dt><dd>1 h 6 min</dd>"));
         assert!(html.contains("<p class=\"id\">timed</p>"));
-        // A hidden one says its state is not the person's.
+        // A hidden one says its state is not the person's, and is not asked
+        // about again and again only to be refused.
         pick(&mut manager, "secret");
-        manager.detailed("secret", Err(Failure::Refused { code: "ACCESS_DENIED".into(), message: String::new() }));
+        assert_eq!(manager.picked(), None);
         let html = shown(&manager, "");
         assert!(html.contains("Its state is not yours to see."));
     }

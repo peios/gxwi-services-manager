@@ -192,8 +192,8 @@ fn security(service: &str) -> Result<SecurityDescriptor, String> {
 /// How a command came out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// It did what was asked.
-    Done,
+    /// It did what was asked, and what peinit said it came to.
+    Done(Option<String>),
     /// It was answered at once, with nothing to follow: already so, or
     /// nothing to do.
     Answered(Accepted),
@@ -226,11 +226,11 @@ pub fn ask(command: Command, service: &str, mut going: impl FnMut(&Operation)) -
             continue;
         }
         match operation.state {
-            peinit::client::OperationState::Completed => return Outcome::Done,
+            peinit::client::OperationState::Completed => return Outcome::Done(operation.result),
             // Joined with one already under way: that one is what to follow.
             peinit::client::OperationState::Merged => match operation.merged_into {
                 Some(into) => id = into,
-                None => return Outcome::Done,
+                None => return Outcome::Done(None),
             },
             _ => {
                 let why = operation.error.or(operation.result).map(|error| crate::words::failure(&error));
