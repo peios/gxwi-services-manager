@@ -30,7 +30,7 @@ use std::sync::Weak;
 
 use gxwi_sd_editor::Part;
 use libgxwi::{Facts, Fields, Live, Surface, Value, escape};
-use peinit::client::{Admission, Command, Failure, State, Status, Summary, admission};
+use peinit::client::{Admission, Command, Failure, State, Status, Summary, Timer, admission};
 
 use crate::permissions::{self, Which};
 use crate::system::{self, Defined, From, Hidden, Outcome, Rights, Seen, Unasked};
@@ -135,6 +135,8 @@ pub struct Manager {
     /// What is under way, by service.
     working: BTreeMap<String, String>,
     said: Option<Said>,
+    /// What a timer's times are said against.
+    clock: words::Clock,
     /// The window, for work done aside to say when it is done. Without one,
     /// nothing is asked of the system.
     pub window: Weak<Surface<Manager>>,
@@ -160,6 +162,7 @@ impl Manager {
             detail: None,
             working: BTreeMap::new(),
             said: None,
+            clock: words::Clock::Machine,
             window: Weak::new(),
         }
     }
@@ -609,6 +612,43 @@ impl Manager {
         }
     }
 
+    /// Its calendar timers, each under its schedule: when it runs next and
+    /// when it last ran, or why it never runs. As peinit has them armed, so
+    /// a timer's random delay is in its next run already.
+    fn timers(&self, timers: &[Timer]) -> String {
+        if timers.is_empty() {
+            return String::new();
+        }
+        let (now, zone) = self.clock.now();
+        let when = |at: &str| words::capital(&words::when(at, now, &zone));
+        let each: String = timers
+            .iter()
+            .map(|timer| {
+                let said = match (&timer.not_armed, &timer.fires_at) {
+                    (Some(why), _) => format!("<p class=\"note bad\">It never runs: {}.</p>", escape(why)),
+                    (None, Some(fires)) => {
+                        let next = match words::until(fires, now) {
+                            Some(until) => format!("{}, in {until}", when(fires)),
+                            None => "Now".to_string(),
+                        };
+                        let last = timer.last_fired_at.as_deref().map_or_else(|| "Not since the machine started".to_string(), when);
+                        let delayed = match &timer.scheduled_at {
+                            Some(scheduled) if scheduled != fires => format!(
+                                "<p class=\"note\">It is due {}, and put back by a random delay.</p>",
+                                escape(&words::when(scheduled, now, &zone))
+                            ),
+                            _ => String::new(),
+                        };
+                        format!("<dl><dt>Next run</dt><dd>{}</dd><dt>Last run</dt><dd>{}</dd></dl>{delayed}", escape(&next), escape(&last))
+                    }
+                    (None, None) => String::new(),
+                };
+                format!("<div class=\"timer\"><p class=\"schedule\"><code>{}</code></p>{said}</div>", escape(&timer.schedule))
+            })
+            .collect();
+        format!("<section class=\"timers\"><h3>{}</h3>{each}</section>", if timers.len() == 1 { "Timer" } else { "Timers" })
+    }
+
     /// The pane about the picked service.
     fn details(&self) -> String {
         let Some(row) = self.picked.as_deref().and_then(|picked| self.row(picked)) else {
@@ -617,6 +657,7 @@ impl Manager {
         let row_of = |name: &str, value: &str| format!("<dt>{name}</dt><dd>{}</dd>", escape(value));
         let mut facts = String::new();
         let mut notes = String::new();
+        let mut timers = String::new();
         // Its name goes under its title where the title is another.
         let (id, description) = (row.display_name().map(|_| row.service()), row.description());
         if let Row::Listed(summary) = &row {
@@ -652,6 +693,7 @@ impl Manager {
                 for warning in &status.warnings {
                     notes += &format!("<p class=\"note bad\">An earlier run left processes behind, in {}.</p>", escape(&warning.path));
                 }
+                timers = self.timers(&status.timers);
             }
             Some(Err(why)) => notes += &format!("<p class=\"note\">{}</p>", escape(why)),
             None if matches!(row, Row::Listed(_)) => notes += "<p class=\"note\">Asking what it is doing…</p>",
@@ -664,7 +706,7 @@ impl Manager {
         format!(
             "<aside class=\"details\" aria-label=\"Details\">\
              <h2>{title}</h2>{id}{description}\
-             <dl>{facts}</dl>{notes}{definition}\
+             <dl>{facts}</dl>{notes}{timers}{definition}\
              <p class=\"may\">{may}</p>{permissions}\
              </aside>",
             definition = self.definition_button(row.service()),
@@ -715,6 +757,7 @@ impl Manager {
 impl Live for Manager {
     fn render(&self, facts: &Facts) -> String {
         let rows = self.rows(facts.fields.get("find"));
+        let (now, zone) = self.clock.now();
         let listing: String = rows
             .iter()
             .enumerate()
@@ -725,15 +768,20 @@ impl Live for Manager {
                     (None, None) => ("unknown", "Not yours to see".to_string()),
                 };
                 let description = row.description().unwrap_or("");
+                let next = match row {
+                    Row::Listed(Summary { next_timer_at: Some(next), .. }) => words::capital(&words::when(next, now, &zone)),
+                    _ => String::new(),
+                };
                 format!(
                     "<li><button type=\"button\" id=\"service-{index}\" fx-click=\"pick\" fx-menu=\"menu-{index}\" fx-value-service=\"{service}\" aria-selected=\"{picked}\">\
                      <span class=\"dot {tone}\" aria-hidden=\"true\"></span><span class=\"name\">{title}</span>\
-                     <span class=\"state\">{state}</span><span class=\"description\">{description}</span>\
+                     <span class=\"state\">{state}</span><span class=\"next\">{next}</span><span class=\"description\">{description}</span>\
                      </button></li>",
                     service = escape(row.service()),
                     picked = self.picked.as_deref() == Some(row.service()),
                     title = escape(row.title()),
                     state = escape(&state),
+                    next = escape(&next),
                     description = escape(description),
                 )
             })
@@ -772,8 +820,8 @@ impl Live for Manager {
              {new}\
              </div>\
              <div class=\"body\">\
-             <div class=\"listing\" id=\"listing\" fx-columns=\"10px minmax(0, 1.3fr) 150px minmax(0, 2fr)\">\
-             <div class=\"head\"><span></span><span>Name</span><span>State</span><span>Description</span></div>\
+             <div class=\"listing\" id=\"listing\" fx-columns=\"10px minmax(0, 1.3fr) 150px 140px minmax(0, 2fr)\">\
+             <div class=\"head\"><span></span><span>Name</span><span>State</span><span>Next run</span><span>Description</span></div>\
              {trouble}{said}<ul class=\"entries\">{listing}</ul>{empty}\
              </div>\
              {details}\
@@ -845,7 +893,7 @@ mod tests {
     use super::*;
 
     fn summary(service: &str, display: Option<&str>, state: State) -> Summary {
-        Summary { service: service.into(), display_name: display.map(Into::into), description: None, state, cause: None, health: None }
+        Summary { service: service.into(), display_name: display.map(Into::into), description: None, state, cause: None, health: None, next_timer_at: None }
     }
 
     /// A window that has looked once and found three services, one of them
@@ -1075,9 +1123,11 @@ mod tests {
                 uptime_seconds: Some(4000),
                 definition_removed: false,
                 warnings: Vec::new(),
+                timers: Vec::new(),
             }),
         );
         let html = shown(&manager, "");
+        assert!(!html.contains("class=\"timers\""));
         assert!(html.contains("<dt>State</dt><dd>Running, restarted after it stopped</dd>"));
         assert!(html.contains("<dt>Process</dt><dd>412</dd>"));
         assert!(html.contains("<dt>Runs as</dt><dd>Local Service</dd>"));
@@ -1089,5 +1139,48 @@ mod tests {
         assert_eq!(manager.picked(), None);
         let html = shown(&manager, "");
         assert!(html.contains("Its state is not yours to see."));
+    }
+
+    #[test]
+    fn a_timer_says_when_it_runs_next_and_last_ran_or_why_it_never_does() {
+        let mut manager = manager(&[("sshd", Rights::Granted(0xf))]);
+        // Saturday 3 October 2026, 13:20, on a clock an hour east of UTC.
+        manager.clock = words::Clock::Fixed("2026-10-03T12:20:00Z".parse().unwrap(), jiff::tz::TimeZone::fixed(jiff::tz::offset(1)));
+        manager.services[1].next_timer_at = Some("2026-10-03T13:00:00.000000000Z".into());
+        let html = shown(&manager, "");
+        assert!(html.contains("<span>Next run</span>"));
+        assert!(html.contains("<span class=\"next\">Today at 14:00</span>"));
+        assert!(html.contains("<span class=\"next\"></span>"));
+        pick(&mut manager, "sshd");
+        let timer = |schedule: &str, scheduled: Option<&str>, fires: Option<&str>, last: Option<&str>, not_armed: Option<&str>| peinit::client::Timer {
+            schedule: schedule.into(),
+            scheduled_at: scheduled.map(Into::into),
+            fires_at: fires.map(Into::into),
+            last_fired_at: last.map(Into::into),
+            not_armed: not_armed.map(Into::into),
+        };
+        manager.detailed(
+            "sshd",
+            Ok(Status {
+                summary: manager.services[1].clone(),
+                status_text: None,
+                job: None,
+                operation: None,
+                uptime_seconds: None,
+                definition_removed: false,
+                warnings: Vec::new(),
+                timers: vec![
+                    timer("*-*-* 01:00:00", Some("2026-10-04T00:00:00.000000000Z"), Some("2026-10-04T00:07:12.000000000Z"), Some("2026-10-03T00:03:40.000000000Z"), None),
+                    timer("hourly", Some("2026-10-03T13:00:00.000000000Z"), Some("2026-10-03T13:00:00.000000000Z"), None, None),
+                    timer("*-02-30", None, None, None, Some("calendar expression has no future occurrence")),
+                ],
+            }),
+        );
+        let html = shown(&manager, "");
+        assert!(html.contains("<h3>Timers</h3>"));
+        assert!(html.contains("<code>*-*-* 01:00:00</code></p><dl><dt>Next run</dt><dd>Tomorrow at 01:07:12, in 11 h 47 min</dd><dt>Last run</dt><dd>Today at 01:03:40</dd></dl>"));
+        assert!(html.contains("It is due tomorrow at 01:00, and put back by a random delay."));
+        assert!(html.contains("<code>hourly</code></p><dl><dt>Next run</dt><dd>Today at 14:00, in 40 min</dd><dt>Last run</dt><dd>Not since the machine started</dd></dl></div>"));
+        assert!(html.contains("<code>*-02-30</code></p><p class=\"note bad\">It never runs: calendar expression has no future occurrence.</p>"));
     }
 }

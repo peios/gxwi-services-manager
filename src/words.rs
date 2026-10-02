@@ -1,6 +1,8 @@
 //! What peinit's states, causes and commands are called where a person reads
 //! them.
 
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use peinit::client::{Command, Health, State};
 
 /// A state, as the State column has it.
@@ -192,6 +194,57 @@ pub fn duration(seconds: u64) -> String {
     }
 }
 
+/// The time, and the zone, that times are said against: the machine's, or
+/// in a test, fixed ones.
+#[derive(Clone)]
+pub enum Clock {
+    Machine,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fixed(Timestamp, TimeZone),
+}
+
+impl Clock {
+    pub fn now(&self) -> (Timestamp, TimeZone) {
+        match self {
+            Clock::Machine => (Timestamp::now(), TimeZone::system()),
+            Clock::Fixed(now, zone) => (*now, zone.clone()),
+        }
+    }
+}
+
+/// A time peinit gives (RFC 3339, in UTC) as a person says it on this
+/// machine's clock, against now: "today at 14:00", "tomorrow at 02:00",
+/// "Monday at 02:00", "5 Oct at 02:00", "5 Oct 2027 at 02:00". Seconds only
+/// where there are some. A time that will not read is left as it is.
+pub fn when(at: &str, now: Timestamp, zone: &TimeZone) -> String {
+    let Ok(at) = at.parse::<Timestamp>() else { return at.to_string() };
+    let (at, now) = (at.to_zoned(zone.clone()), now.to_zoned(zone.clone()));
+    let clock = if at.second() == 0 { at.strftime("%H:%M") } else { at.strftime("%H:%M:%S") };
+    let days = (at.date() - now.date()).get_days();
+    let day = match days {
+        0 => "today".to_string(),
+        1 => "tomorrow".to_string(),
+        -1 => "yesterday".to_string(),
+        2..=6 => at.strftime("%A").to_string(),
+        _ if at.year() == now.year() => at.strftime("%-d %b").to_string(),
+        _ => at.strftime("%-d %b %Y").to_string(),
+    };
+    format!("{day} at {clock}")
+}
+
+/// How long until `at`, roughly, where it is still to come.
+pub fn until(at: &str, now: Timestamp) -> Option<String> {
+    let at = at.parse::<Timestamp>().ok()?;
+    let seconds = at.as_second() - now.as_second();
+    (seconds > 0).then(|| duration(seconds as u64))
+}
+
+/// `said` with its first letter a capital, to start a line with.
+pub fn capital(said: &str) -> String {
+    let mut chars = said.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
 /// Who a SID is, where it is one of the principals services run as. Anyone
 /// else is shown as their SID.
 pub fn principal(sid: &str) -> String {
@@ -229,6 +282,26 @@ mod tests {
         assert_eq!(failure("ReadinessTimeout"), "it did not become ready in time");
         assert_eq!(failure("SomethingNew: detail"), "SomethingNew: detail");
         assert_eq!(failure("the socket went away"), "the socket went away");
+    }
+
+    #[test]
+    fn a_time_is_said_on_the_local_clock_by_how_far_off_its_day_is() {
+        // Saturday 3 October 2026, 13:20 in UTC; 14:20 an hour east of it.
+        let now: Timestamp = "2026-10-03T13:20:00Z".parse().unwrap();
+        let utc = TimeZone::UTC;
+        let east = TimeZone::fixed(jiff::tz::offset(1));
+        assert_eq!(when("2026-10-03T14:00:00.000000000Z", now, &utc), "today at 14:00");
+        assert_eq!(when("2026-10-03T14:00:00.000000000Z", now, &east), "today at 15:00");
+        assert_eq!(when("2026-10-03T23:30:00.000000000Z", now, &east), "tomorrow at 00:30");
+        assert_eq!(when("2026-10-04T02:07:12.000000000Z", now, &utc), "tomorrow at 02:07:12");
+        assert_eq!(when("2026-10-02T02:00:00.000000000Z", now, &utc), "yesterday at 02:00");
+        assert_eq!(when("2026-10-05T02:00:00.000000000Z", now, &utc), "Monday at 02:00");
+        assert_eq!(when("2026-09-01T00:00:00.000000000Z", now, &utc), "1 Sep at 00:00");
+        assert_eq!(when("2027-01-01T00:00:00.000000000Z", now, &utc), "1 Jan 2027 at 00:00");
+        assert_eq!(when("whenever", now, &utc), "whenever");
+        assert_eq!(until("2026-10-03T14:00:00.000000000Z", now).as_deref(), Some("40 min"));
+        assert_eq!(until("2026-10-03T13:00:00.000000000Z", now), None);
+        assert_eq!(capital("tomorrow at 02:00"), "Tomorrow at 02:00");
     }
 
     #[test]
