@@ -217,7 +217,14 @@ impl Clock {
 /// "Monday at 02:00", "5 Oct at 02:00", "5 Oct 2027 at 02:00". Seconds only
 /// where there are some. A time that will not read is left as it is.
 pub fn when(at: &str, now: Timestamp, zone: &TimeZone) -> String {
-    let Ok(at) = at.parse::<Timestamp>() else { return at.to_string() };
+    match at.parse::<Timestamp>() {
+        Ok(at) => when_at(at, now, zone),
+        Err(_) => at.to_string(),
+    }
+}
+
+/// [`when`], of a time already read.
+pub fn when_at(at: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
     let (at, now) = (at.to_zoned(zone.clone()), now.to_zoned(zone.clone()));
     let clock = if at.second() == 0 { at.strftime("%H:%M") } else { at.strftime("%H:%M:%S") };
     let days = (at.date() - now.date()).get_days();

@@ -27,7 +27,7 @@ use std::sync::Weak;
 use libgxwi::{Closer, Facts, Fields, Live, Surface, Value, escape};
 use peinit::client::{Definition, FIELDS, FieldGroup, FieldInfo, FieldKind, Problem, State, TakesEffect, changes, service_field};
 
-use crate::{fields, store, system};
+use crate::{fields, store, system, words};
 
 /// What is being asked of the person before it is done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,8 @@ pub struct Editor {
     asking: Option<Asking>,
     saving: bool,
     said: Option<(String, bool)>,
+    /// What when a schedule comes round is said against.
+    clock: words::Clock,
     pub window: Weak<Surface<Editor>>,
     pub closer: Option<Closer>,
 }
@@ -100,6 +102,7 @@ impl Editor {
             asking: None,
             saving: false,
             said: None,
+            clock: words::Clock::Machine,
             window: Weak::new(),
             closer: None,
         };
@@ -261,12 +264,37 @@ impl Editor {
             TakesEffect::Runtime => "",
         };
         let changed = if self.edited.get(info.name) != self.found.get(info.name) { " changed" } else { "" };
+        let schedules = if info.name == "Triggers" { self.schedules() } else { String::new() };
         format!(
             "<div class=\"field{changed}\"><label for=\"{id}\">{label} <code>{name}</code></label>{control}\
-             <p class=\"says\" id=\"h-{name}\">{says}{when}</p>{wrong}</div>",
+             <p class=\"says\" id=\"h-{name}\">{says}{when}</p>{wrong}{schedules}</div>",
             name = info.name,
             wrong = wrong.map(|wrong| format!("<p class=\"wrong\" id=\"w-{}\">{}</p>", info.name, escape(&wrong))).unwrap_or_default(),
         )
+    }
+
+    /// When each timer schedule as written comes round next, so that one
+    /// that never does is seen to before it is saved. A schedule that will
+    /// not read is the check's to say.
+    fn schedules(&self) -> String {
+        let (now, zone) = self.clock.now();
+        let after = u64::try_from(now.as_nanosecond()).unwrap_or(0);
+        let each: String = self
+            .edited
+            .schedules(after)
+            .into_iter()
+            .filter_map(|(schedule, next)| {
+                let schedule = escape(&schedule);
+                match next.ok()? {
+                    Some(next) => {
+                        let next = jiff::Timestamp::from_nanosecond(i128::from(next)).ok()?;
+                        Some(format!("<li><code>{schedule}</code> comes round next {}.</li>", escape(&words::when_at(next, now, &zone))))
+                    }
+                    None => Some(format!("<li class=\"bad\"><code>{schedule}</code> never comes round, so it never starts the service.</li>")),
+                }
+            })
+            .collect();
+        if each.is_empty() { String::new() } else { format!("<ul class=\"schedules\">{each}</ul>") }
     }
 }
 
@@ -464,6 +492,22 @@ mod tests {
         let name = format!("f-{field}");
         fields.set(&name, text);
         editor.input(&name, &mut fields);
+    }
+
+    #[test]
+    fn each_timer_says_when_its_schedule_comes_round_and_one_that_never_does_says_so() {
+        let mut editor = editor(&[("ImagePath", "/usr/bin/web")], Ok(()));
+        // Saturday 3 October 2026, 13:20, on a clock an hour east of UTC.
+        editor.clock = words::Clock::Fixed("2026-10-03T12:20:00Z".parse().unwrap(), jiff::tz::TimeZone::fixed(jiff::tz::offset(1)));
+        assert!(!shown(&editor).contains("class=\"schedules\""));
+        typed(&mut editor, "Triggers", "boot\ntimer:*-*-* 02:00:00\ntimer:*-02-30");
+        let html = shown(&editor);
+        assert!(html.contains(
+            "<ul class=\"schedules\"><li><code>*-*-* 02:00:00</code> comes round next tomorrow at 02:00.</li>\
+             <li class=\"bad\"><code>*-02-30</code> never comes round, so it never starts the service.</li></ul>"
+        ));
+        // It is said, not refused: peinit takes it, and arms the rest.
+        assert!(html.contains("fx-click=\"save\" fx-key=\"Ctrl+S\">Save"));
     }
 
     #[test]

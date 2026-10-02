@@ -235,6 +235,10 @@ body {
 .definition .field .says, .definition .field .wrong, .definition .field .value { grid-column: 2; margin: 0; font-size: 12px; color: var(--text-muted); }
 .definition .field .value { color: var(--text-secondary); padding-top: 5px; }
 .definition .field .wrong { color: var(--danger-text); }
+/* When each timer's schedule comes round, under Triggers. */
+.definition .field .schedules { grid-column: 2; margin: 0; padding-left: var(--space-4); font-size: 12px; color: var(--text-secondary); }
+.definition .field .schedules code { font: 500 12px/1.4 var(--font-mono); }
+.definition .field .schedules .bad { color: var(--danger-text); }
 .definition input, .definition textarea, .definition select {
     box-sizing: border-box;
     width: 100%;
@@ -276,5 +280,5 @@ body {
 @media (max-width: 560px) {
     .definition .field { grid-template-columns: minmax(0, 1fr); }
     .definition .field label { grid-row: auto; }
-    .definition .field .says, .definition .field .wrong, .definition .field .value { grid-column: 1; }
+    .definition .field .says, .definition .field .wrong, .definition .field .value, .definition .field .schedules { grid-column: 1; }
 }
