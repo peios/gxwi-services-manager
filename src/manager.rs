@@ -26,7 +26,7 @@
 //! may do may have changed with it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 use gxwi_sd_editor::Part;
 use libgxwi::{Facts, Fields, Live, Surface, Value, escape};
@@ -123,6 +123,9 @@ pub struct Manager {
     asking: Option<Forget>,
     /// The permissions open in the editor, by service and which.
     editing: HashSet<(String, Which)>,
+    /// The services whose definitions are open, each in a window of its
+    /// own, by name in lower case.
+    defining: HashSet<String>,
     /// Whether peinit has been asked yet.
     looked: bool,
     /// Whether peinit's control socket turned the person away: then nothing
@@ -155,6 +158,7 @@ impl Manager {
             creatable: Err("it has not been asked yet".into()),
             asking: None,
             editing: HashSet::new(),
+            defining: HashSet::new(),
             looked: false,
             refused: false,
             trouble: None,
@@ -390,17 +394,38 @@ impl Manager {
     /// Nothing ends it when this window goes, so what is being changed there
     /// is not lost with it. The desktop starts programs only for the shell.
     fn definition(&mut self, service: Option<&str>) {
-        if self.window.upgrade().is_none() {
+        // One window to a definition: two would each save over the other's
+        // changes, or be refused for them. A window cannot be brought
+        // forward from here, so it is said instead.
+        if let Some(service) = service.filter(|service| self.defining(service)) {
+            let title = self.row(service).map_or(service.to_string(), |row| row.title().to_string());
+            self.said = Some(Said { text: format!("The definition of {title} is open already, in a window of its own."), bad: false });
             return;
         }
+        let Some(window) = self.window.upgrade() else { return };
         let program = std::env::current_exe().unwrap_or_else(|_| "/usr/bin/services-manager".into());
         let arguments = match service {
             Some(service) => vec!["--definition".to_string(), service.to_string()],
             None => vec!["--new".to_string()],
         };
+        let open = service.map(str::to_ascii_lowercase);
         match std::process::Command::new(program).args(arguments).spawn() {
-            // Waited for, so that it does not linger once it has gone.
-            Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
+            // Waited for, so that it does not linger once it has gone, and
+            // then it may be opened again.
+            Ok(mut child) => {
+                if let Some(open) = &open {
+                    self.defining.insert(open.clone());
+                }
+                let window = Arc::downgrade(&window);
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    if let (Some(open), Some(window)) = (open, window.upgrade()) {
+                        window.update(|manager, _| {
+                            manager.defining.remove(&open);
+                        });
+                    }
+                });
+            }
             Err(e) => self.said = Some(Said { text: format!("The definition could not be opened: {e}."), bad: true }),
         }
     }
@@ -411,7 +436,8 @@ impl Manager {
             Some((chosen, Ok(()))) if chosen == service => "Edit definition…",
             _ => "Definition…",
         };
-        format!("<button type=\"button\" class=\"open\" fx-click=\"definition\" fx-value-service=\"{}\">{label}</button>", escape(service))
+        let open = if self.defining(service) { " disabled title=\"Its definition is open already, in a window of its own.\"" } else { "" };
+        format!("<button type=\"button\" class=\"open\" fx-click=\"definition\" fx-value-service=\"{}\"{open}>{label}</button>", escape(service))
     }
 
     /// Opens the editor on `which` permissions of `service`.
@@ -587,9 +613,15 @@ impl Manager {
             "<menu id=\"menu-{index}\" hidden>{items}<hr>\
              <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"control\"{control}>Who may control it…</button></li>\
              <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"definition\">Who may change its definition…</button></li><hr>\
-             <li><button type=\"button\" fx-click=\"definition\">Definition…</button></li>\
-             <li><button type=\"button\" fx-copy=\"service\">Copy name</button></li></menu>"
+             <li><button type=\"button\" fx-click=\"definition\"{defining}>Definition…</button></li>\
+             <li><button type=\"button\" fx-copy=\"service\">Copy name</button></li></menu>",
+            defining = if self.defining(row.service()) { " disabled" } else { "" },
         )
+    }
+
+    /// Whether `service`'s definition is open in a window already.
+    fn defining(&self, service: &str) -> bool {
+        self.defining.contains(&service.to_ascii_lowercase())
     }
 
     /// What may be done with `service`, in a sentence.
@@ -1139,6 +1171,19 @@ mod tests {
         assert_eq!(manager.picked(), None);
         let html = shown(&manager, "");
         assert!(html.contains("Its state is not yours to see."));
+    }
+
+    #[test]
+    fn a_definition_open_in_its_window_is_not_opened_again() {
+        let mut manager = manager(&[("timed", Rights::Granted(0xf))]);
+        pick(&mut manager, "timed");
+        manager.defining.insert("timed".into());
+        let html = shown(&manager, "");
+        assert!(html.contains("fx-value-service=\"timed\" disabled title=\"Its definition is open already, in a window of its own.\">Definition…</button>"));
+        assert!(html.contains("<button type=\"button\" fx-click=\"definition\" disabled>Definition…</button>"));
+        // Asked for all the same, it is not opened.
+        manager.event("definition", &serde_json::json!({ "service": "timed" }), &mut Fields::default());
+        assert_eq!(manager.said, Some(Said { text: "The definition of Time client is open already, in a window of its own.".into(), bad: false }));
     }
 
     #[test]
