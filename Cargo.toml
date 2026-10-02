@@ -1,0 +1,19 @@
+[package]
+name = "services-manager"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+# The dialog role is not in a released libgxwi yet: until it is, the one
+# beside this checkout.
+libgxwi = { path = "../gxwi/libgxwi" }
+peios = { git = "https://github.com/peios/peios-rs.git", rev = "3dffee949a457509078ffc2f423613de330b5401", package = "peios" }
+# What peinit offers a program that manages services (`peinit::client`),
+# and nothing of its own runtime: its features would bring in another
+# revision of `peios`. Beside this checkout until it is pushed.
+peinit2 = { path = "../peinit", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"

@@ -1,0 +1,7 @@
+# What Services Manager is to a desktop (PGSS Applications): installed as
+# /usr/share/apps/dev.peios.services-manager.toml, named for the id, by the
+# package that installs the program. It is a window and nothing else: what
+# a terminal does with services is svctl's.
+title = "Services Manager"
+description = "Start, stop and look after the services on this machine"
+program = "/usr/bin/services-manager"

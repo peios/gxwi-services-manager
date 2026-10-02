@@ -1,0 +1,162 @@
+/* Made from the theme's tokens, which the desktop's page for a live surface
+   brings with it. */
+html, body { height: 100%; }
+
+body {
+    margin: 0;
+    background: var(--surface-1);
+    color: var(--text-primary);
+    font: 500 13px/1.4 var(--font-text);
+    color-scheme: light dark;
+    overflow: hidden;
+}
+
+#fx-root { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
+#fx-root[data-connected="false"] { opacity: 0.5; }
+
+/* The bar: finding a service, and the commands for the one picked. */
+.bar {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border-bottom: 1px solid var(--border-default);
+    background: var(--surface-2);
+}
+
+.bar input {
+    flex: 1;
+    min-width: 10em;
+    max-width: 24em;
+    height: var(--control-sm);
+    padding: 0 var(--space-2);
+    font: inherit;
+    color: inherit;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+.bar .commands { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.bar .refresh { margin-left: auto; }
+
+.bar button {
+    height: var(--control-sm);
+    padding: 0 var(--space-3);
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.bar button:hover:not(:disabled) { border-color: var(--border-strong); }
+.bar button:disabled { color: var(--text-muted); cursor: default; opacity: 0.6; }
+.bar input:focus-visible, .bar button:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 1px; }
+
+/* The listing and, beside it, the details of the service picked. */
+.body { display: flex; flex: 1; min-height: 0; }
+.listing { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+
+/* One grid for the head and every row, so the columns line up. The widths
+   are the page's, from fx-columns on the listing. */
+.head, .entries button {
+    display: grid;
+    grid-template-columns: var(--fx-columns);
+    gap: var(--space-2);
+    align-items: center;
+    padding: var(--space-1) var(--space-3);
+}
+
+.head {
+    flex: none;
+    border-bottom: 1px solid var(--border-default);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.entries {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: var(--space-1) 0;
+    list-style: none;
+    overflow-y: auto;
+}
+
+.entries button {
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: var(--text-secondary);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: default;
+    user-select: none;
+}
+.entries button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.entries button .name { color: var(--text-primary); }
+.entries button .description { color: var(--text-muted); }
+.entries button:hover { background: var(--surface-2); }
+.entries button[aria-selected="true"] { background: var(--surface-2); border-color: var(--accent-solid); }
+
+/* A state's dot. The theme has an accent and a danger colour; the rest is
+   told apart by being hollow or not. */
+.dot { width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; }
+.dot.good { background: var(--accent-solid); }
+.dot.busy { border: 2px solid var(--accent-solid); }
+.dot.bad { background: var(--danger-text); }
+.dot.idle { border: 1px solid var(--text-muted); }
+.dot.unknown { border: 1px dashed var(--text-muted); }
+
+.details {
+    flex: none;
+    width: 300px;
+    padding: var(--space-4) var(--space-3);
+    overflow-y: auto;
+    border-left: 1px solid var(--border-default);
+}
+.details.empty p { color: var(--text-muted); }
+.details h2 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.details .id { margin: var(--space-1) 0 0; font: 500 12px/1.4 var(--font-mono); color: var(--text-muted); }
+.details .description { margin: var(--space-2) 0 0; color: var(--text-secondary); }
+.details dl { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-3); margin: var(--space-4) 0 0; font-size: 12px; }
+.details dt { color: var(--text-muted); }
+.details dd { margin: 0; overflow-wrap: anywhere; }
+.details .note { margin: var(--space-3) 0 0; font-size: 12px; color: var(--text-secondary); }
+.details .note.bad { color: var(--danger-text); }
+.details .may {
+    margin: var(--space-4) 0 0;
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border-default);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.status {
+    display: flex;
+    flex: none;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-1) var(--space-3);
+    border-top: 1px solid var(--border-default);
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.trouble, .more, .said { margin: var(--space-2) var(--space-3); font-size: 12px; color: var(--text-muted); }
+.trouble, .said.bad { color: var(--danger-text); }
+.said { color: var(--text-secondary); }
+
+/* Narrow: the description column goes, then the details pane. */
+@media (max-width: 900px) {
+    .head, .entries button { grid-template-columns: 10px minmax(0, 1fr) 130px; }
+    .head span:last-child, .entries .description { display: none; }
+}
+@media (max-width: 640px) { .details { display: none; } }
