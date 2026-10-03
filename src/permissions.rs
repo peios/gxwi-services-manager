@@ -11,10 +11,10 @@
 //! the access that changing it takes, never guessed. What the editor sends
 //! back is applied here, by whatever handle was opened for it.
 
-use gxwi_sd_editor::{Can, Children, Generic, Object, Part, Request, Right};
+use gxwi_sd_editor::{Can, Children, Generic, Object, Part, Request, Right, splice};
 use peinit::client::{SERVICE_GENERIC_MAPPING, SERVICES_ROOT_KEY, ServiceAccess};
 use peios::registry::{Key, KeyAccess, OpenFlags, SecInfo, ValueType};
-use peios::security::{Control, SdBuilder, SdView, SecurityDescriptor};
+use peios::security::SecurityDescriptor;
 
 use crate::system::{self, From};
 
@@ -192,33 +192,6 @@ pub fn every_words(from: From) -> &'static str {
     }
 }
 
-/// `edited`'s `parts`, and the rest of `current`: what applying only the
-/// parts the person changed comes to, where the descriptor is kept whole.
-pub fn splice(current: &[u8], edited: &[u8], parts: &[Part]) -> Result<Vec<u8>, String> {
-    let current = SdView::parse(current).map_err(|e| format!("what it is now could not be read ({e})"))?;
-    let edited = SdView::parse(edited).map_err(|e| format!("it is not a security descriptor ({e})"))?;
-    let from = |part: Part| if parts.contains(&part) { &edited } else { &current };
-    let mut sd = SdBuilder::new();
-    if let Some(owner) = from(Part::Owner).owner() {
-        sd.owner(owner);
-    }
-    if let Some(group) = from(Part::Group).group() {
-        sd.group(group);
-    }
-    match from(Part::Dacl).dacl() {
-        Some(dacl) => sd.dacl(&dacl.to_acl().map_err(|e| format!("its access list could not be made ({e})"))?),
-        None => sd.dacl_grant_all(),
-    };
-    if let Some(sacl) = from(Part::Sacl).sacl() {
-        sd.sacl(&sacl.to_acl().map_err(|e| format!("its audit list could not be made ({e})"))?);
-    }
-    let kept = (from(Part::Dacl).control() & (Control::DACL_PROTECTED | Control::DACL_AUTO_INHERITED))
-        | (from(Part::Sacl).control() & (Control::SACL_PROTECTED | Control::SACL_AUTO_INHERITED));
-    sd.control(kept, Control::empty());
-    let sd = sd.build().map_err(|e| format!("it could not be made ({e})"))?;
-    Ok(sd.as_bytes().to_vec())
-}
-
 fn unreadable(e: &peios::Error, what: &str) -> String {
     if e.raw_os_error() == Some(EACCES) { format!("you may not read {what}") } else { format!("{what} could not be read ({e})") }
 }
@@ -231,25 +204,6 @@ fn refused(e: &peios::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peios::security::sddl;
-
-    fn bytes(text: &str) -> Vec<u8> {
-        sddl::parse(text).unwrap().as_bytes().to_vec()
-    }
-
-    #[test]
-    fn only_the_parts_changed_are_put_in() {
-        let now = bytes("O:SYG:BAD:P(A;;0xf;;;SY)");
-        let edited = bytes("O:BAG:SYD:(A;;0xf;;;SY)(A;;0x1;;;WD)");
-        let applied = splice(&now, &edited, &[Part::Dacl]).unwrap();
-        let view = SdView::parse(&applied).unwrap();
-        assert_eq!(view.owner().unwrap().to_sid().to_string(), "S-1-5-18");
-        assert_eq!(view.group().unwrap().to_sid().to_string(), "S-1-5-32-544");
-        assert_eq!(view.dacl().unwrap().len(), 2);
-        assert!(!view.control().contains(Control::DACL_PROTECTED), "protection goes with the access list it was on");
-        assert_eq!(splice(&now, &edited, &[]).unwrap(), splice(&now, &now, &[Part::Dacl, Part::Owner]).unwrap());
-        assert!(splice(&now, b"nonsense", &[Part::Dacl]).is_err());
-    }
 
     #[test]
     fn the_service_rights_are_named_from_the_most() {
