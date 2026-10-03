@@ -9,7 +9,7 @@ publish = false
 # The dialog role is not in a released libgxwi yet: until it is, the one
 # beside this checkout.
 libgxwi = { path = "../gxwi/libgxwi" }
-peios = { git = "https://github.com/peios/peios-rs.git", rev = "3dffee949a457509078ffc2f423613de330b5401", package = "peios" }
+peios = { git = "https://github.com/peios/peios-rs.git", rev = "fa833541e1837042765072f092140f4af683edc2", package = "peios" }
 # What peinit offers a program that manages services (`peinit::client`),
 # and nothing of its own runtime: its features would bring in another
 # revision of `peios`. Beside this checkout until it is pushed.
