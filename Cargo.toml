@@ -16,7 +16,7 @@ peios = { git = "https://github.com/peios/peios-rs.git", rev = "3cf23f68d40c4adf
 peinit2 = { path = "../peinit", default-features = false }
 # The permissions editor's protocol, and nothing of its program. Beside this
 # checkout until it is pushed.
-gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["splice"] }
+gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["splice", "registry"] }
 # A timer's times, which peinit gives in UTC, said on this machine's clock.
 # The one peinit's calendar uses.
 jiff = "0.2.29"

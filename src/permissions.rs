@@ -13,7 +13,7 @@
 
 use gxwi_sd_editor::{Can, Children, Generic, Object, Part, Request, Right, splice};
 use peinit::client::{SERVICE_GENERIC_MAPPING, SERVICES_ROOT_KEY, ServiceAccess};
-use peios::registry::{Key, KeyAccess, OpenFlags, SecInfo, ValueType};
+use peios::registry::{Key, KeyAccess, OpenFlags, ValueType};
 use peios::security::SecurityDescriptor;
 
 use crate::system::{self, From};
@@ -54,7 +54,7 @@ impl Which {
 
 /// What applies a descriptor the person asked to apply, and why it could
 /// not be.
-pub type Apply = Box<dyn FnMut(&[u8], &[Part]) -> Result<(), String> + Send>;
+pub use gxwi_sd_editor::registry::Apply;
 
 /// The descriptor `which` of `service`, as the editor is to be asked to
 /// show it, and what applies what it sends back. `service` means nothing
@@ -129,50 +129,11 @@ fn control(service: &str, title: &str) -> Result<(Request, Apply), String> {
     service_security(&path, object, cannot, move || system::security(&service).map(|(descriptor, _)| descriptor))
 }
 
+/// Who may change its definition is the descriptor of its definition's key,
+/// which the editor is opened on as any key is.
 fn definition(service: &str, title: &str) -> Result<(Request, Apply), String> {
     let path = format!("{SERVICES_ROOT_KEY}\\{service}");
-    // Opened for as much of changing it as the person may do, which is
-    // what they are offered.
-    let mut opened = None;
-    for (dacl, owner) in [(true, true), (true, false), (false, true), (false, false)] {
-        let mut access = KeyAccess::READ_CONTROL;
-        access.set(KeyAccess::WRITE_DAC, dacl);
-        access.set(KeyAccess::WRITE_OWNER, owner);
-        match Key::open(None, &path, access, OpenFlags::empty()) {
-            Ok(key) => {
-                opened = Some((key, dacl, owner));
-                break;
-            }
-            Err(e) if e.raw_os_error() == Some(EACCES) => continue,
-            Err(e) => return Err(unreadable(&e, "its definition")),
-        }
-    }
-    let Some((key, dacl, owner)) = opened else { return Err("you may not read who may change its definition".into()) };
-    let descriptor = key.get_security(SecInfo::OWNER | SecInfo::GROUP | SecInfo::DACL).map_err(|e| unreadable(&e, "who may change its definition"))?;
-    let right = |name: &str, mask: KeyAccess| Right { name: name.into(), mask: mask.bits(), general: true };
-    let why = (!dacl).then(|| "You may not change who may read or change this service's definition.".to_string());
-    let request = Request {
-        object: Object { name: format!("{title} definition"), kind: format!("Registry key {path}"), container: true, children: Children::Containers },
-        sd: descriptor.as_bytes().to_vec(),
-        rights: vec![right("Full control", KeyAccess::ALL_ACCESS), right("Read", KeyAccess::READ), right("Write", KeyAccess::WRITE)],
-        generic: Generic { read: KeyAccess::READ.bits(), write: KeyAccess::WRITE.bits(), execute: 0, all: KeyAccess::ALL_ACCESS.bits() },
-        can: Can { dacl, owner, audit: false, why },
-    };
-    let apply = move |sd: &[u8], parts: &[Part]| {
-        let mut secinfo = SecInfo::empty();
-        for part in parts {
-            secinfo |= match part {
-                Part::Owner => SecInfo::OWNER,
-                Part::Group => SecInfo::GROUP,
-                Part::Dacl => SecInfo::DACL,
-                Part::Sacl => SecInfo::SACL,
-            };
-        }
-        let sd = SecurityDescriptor::from_validated_bytes(sd.to_vec()).map_err(|e| format!("it is not a security descriptor ({e})"))?;
-        // The registry takes the parts named, and keeps the rest as it is.
-        key.set_security(secinfo, &sd, None).map_err(|e| refused(&e))
-    };
-    Ok((request, Box::new(apply)))
+    gxwi_sd_editor::registry::key(&path, &format!("{title} definition"), "You may not change who may read or change this service's definition.")
 }
 
 /// Where who may control a service comes from, in words: "set for it".
