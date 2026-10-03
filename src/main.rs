@@ -26,8 +26,9 @@ use definition::Editor;
 use manager::Manager;
 
 // What this program looks like, to whatever lists it. The icon itself is
-// `services-manager.svg` at the repo root, installed as the base theme's.
-libgxwi::icon!(b"dev.peios.services-manager");
+// `gxwi-services-manager.svg` at the repo root, installed as the base
+// theme's.
+libgxwi::icon!(b"dev.peios.gxwi-services-manager");
 
 /// How often the window looks again at what the services are doing. peinit
 /// says nothing when a service changes state, so the window asks.
@@ -88,12 +89,12 @@ fn main() {
     let mut app = match App::connect() {
         Ok(app) => app,
         Err(e) => {
-            eprintln!("services-manager: no desktop to open on: {e}");
-            eprintln!("services-manager: on a terminal, svctl does what this does");
+            eprintln!("gxwi-services-manager: no desktop to open on: {e}");
+            eprintln!("gxwi-services-manager: on a terminal, svctl does what this does");
             std::process::exit(1);
         }
     };
-    app.stylesheet("/services-manager.css", include_str!("services-manager.css"));
+    app.stylesheet("/gxwi-services-manager.css", include_str!("gxwi-services-manager.css"));
     // A definition, in a window of its own, which the list opens.
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let editor = match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
@@ -101,7 +102,7 @@ fn main() {
         ["--new"] => Some(Editor::new_service()),
         [] => None,
         _ => {
-            eprintln!("services-manager: usage: services-manager [--definition SERVICE | --new]");
+            eprintln!("gxwi-services-manager: usage: gxwi-services-manager [--definition SERVICE | --new]");
             std::process::exit(64);
         }
     };
@@ -120,7 +121,7 @@ fn main() {
         std::thread::spawn(move || watch(aside));
     }
     if let Err(e) = app.run() {
-        eprintln!("services-manager: {e}");
+        eprintln!("gxwi-services-manager: {e}");
         std::process::exit(1);
     }
 }

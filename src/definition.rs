@@ -3,7 +3,7 @@
 //! change, and save; or a new service, to define.
 //!
 //! Services Manager opens it as a program of its own
-//! (`services-manager --definition sshd`, or `--new`), so that it can sit
+//! (`gxwi-services-manager --definition sshd`, or `--new`), so that it can sit
 //! beside the list and outlive it.
 //!
 //! WHAT IS SHOWN is the key's values as peinit reads them

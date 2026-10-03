@@ -403,7 +403,7 @@ impl Manager {
             return;
         }
         let Some(window) = self.window.upgrade() else { return };
-        let program = std::env::current_exe().unwrap_or_else(|_| "/usr/bin/services-manager".into());
+        let program = std::env::current_exe().unwrap_or_else(|_| "/usr/bin/gxwi-services-manager".into());
         let arguments = match service {
             Some(service) => vec!["--definition".to_string(), service.to_string()],
             None => vec!["--new".to_string()],

@@ -1,4 +1,4 @@
-# Sourced from the services-manager root, not run: what cargo needs to build
+# Sourced from the gxwi-services-manager root, not run: what cargo needs to build
 # libgxwi and the `peios` crate against sibling checkouts.
 REPO="$(cd .. && pwd)"
 export BINDGEN_EXTRA_CLANG_ARGS="-isystem $(gcc -print-file-name=include)"

@@ -14,8 +14,8 @@ share=../gxwi/target/vmshare
 [ -d "$share" ] || { echo "no $share: boot the VM from ../gxwi first" >&2; exit 1; }
 cargo build --release
 mkdir -p "$share/icons/base"
-cp services-manager.svg "$share/icons/base/dev.peios.services-manager.svg"
+cp gxwi-services-manager.svg "$share/icons/base/dev.peios.gxwi-services-manager.svg"
 mkdir -p "$share/apps"
-cp dev.peios.services-manager.toml "$share/apps/dev.peios.services-manager.toml"
-cp target/release/services-manager "$share/services-manager.new"
-mv "$share/services-manager.new" "$share/services-manager"
+cp dev.peios.gxwi-services-manager.toml "$share/apps/dev.peios.gxwi-services-manager.toml"
+cp target/release/gxwi-services-manager "$share/gxwi-services-manager.new"
+mv "$share/gxwi-services-manager.new" "$share/gxwi-services-manager"

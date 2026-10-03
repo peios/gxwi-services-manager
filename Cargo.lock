@@ -322,6 +322,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gxwi-services-manager"
+version = "0.0.1"
+dependencies = [
+ "gxwi-sd-editor",
+ "jiff",
+ "libgxwi",
+ "peinit2",
+ "peios",
+ "serde_json",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -843,18 +855,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "services-manager"
-version = "0.0.1"
-dependencies = [
- "gxwi-sd-editor",
- "jiff",
- "libgxwi",
- "peinit2",
- "peios",
- "serde_json",
 ]
 
 [[package]]
