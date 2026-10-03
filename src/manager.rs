@@ -39,6 +39,9 @@ use crate::words;
 /// What is said where peinit's control socket turns the person away.
 const REFUSED: &str = "The service manager does not let you ask it anything, so the state of the services here is not yours to see, and none of them is yours to start or stop.";
 
+/// What shows a service's logs.
+const EVENT_VIEWER: &str = "/usr/bin/gxwi-event-viewer";
+
 /// The commands, in the order their buttons are drawn.
 const COMMANDS: [Command; 5] = [Command::Start, Command::Stop, Command::Restart, Command::Reload, Command::Reset];
 
@@ -430,6 +433,21 @@ impl Manager {
         }
     }
 
+    /// Opens what `service` has logged, and whatever runs under it, in
+    /// Event Viewer: a program of its own, whose window outlasts this one.
+    fn logs(&mut self, service: &str) {
+        match std::process::Command::new(EVENT_VIEWER).args(["--logs", service]).spawn() {
+            // Waited for, so that it does not linger once it has gone.
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.said = Some(Said { text: "Event Viewer is not installed.".into(), bad: true }),
+            Err(e) => self.said = Some(Said { text: format!("Event Viewer could not be started: {e}."), bad: true }),
+        }
+    }
+
     /// The button that opens `service`'s definition: to change, or to read.
     fn definition_button(&self, service: &str) -> String {
         let label = match &self.changeable {
@@ -437,7 +455,11 @@ impl Manager {
             _ => "Definition…",
         };
         let open = if self.defining(service) { " disabled title=\"Its definition is open already, in a window of its own.\"" } else { "" };
-        format!("<button type=\"button\" class=\"open\" fx-click=\"definition\" fx-value-service=\"{}\"{open}>{label}</button>", escape(service))
+        format!(
+            "<div class=\"opens\"><button type=\"button\" class=\"open\" fx-click=\"definition\" fx-value-service=\"{service}\"{open}>{label}</button>\
+             <button type=\"button\" class=\"open\" fx-click=\"logs\" fx-value-service=\"{service}\">Logs…</button></div>",
+            service = escape(service),
+        )
     }
 
     /// Opens the editor on `which` permissions of `service`.
@@ -614,6 +636,7 @@ impl Manager {
              <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"control\"{control}>Who may control it…</button></li>\
              <li><button type=\"button\" fx-click=\"permissions\" fx-value-which=\"definition\">Who may change its definition…</button></li><hr>\
              <li><button type=\"button\" fx-click=\"definition\"{defining}>Definition…</button></li>\
+             <li><button type=\"button\" fx-click=\"logs\">Logs…</button></li>\
              <li><button type=\"button\" fx-copy=\"service\">Copy name</button></li></menu>",
             defining = if self.defining(row.service()) { " disabled" } else { "" },
         )
@@ -910,6 +933,12 @@ impl Live for Manager {
                     self.definition(Some(&service));
                 }
             }
+            "logs" => {
+                if let Some(service) = service {
+                    self.pick(service.clone());
+                    self.logs(&service);
+                }
+            }
             "new" if self.creatable.is_ok() => self.definition(None),
             "refresh" => {
                 self.said = None;
@@ -1165,6 +1194,9 @@ mod tests {
         assert!(html.contains("<dt>Runs as</dt><dd>Local Service</dd>"));
         assert!(html.contains("<dt>Running for</dt><dd>1 h 6 min</dd>"));
         assert!(html.contains("<p class=\"id\">timed</p>"));
+        // What it has logged opens in Event Viewer, from the details and its menu.
+        assert!(html.contains("fx-click=\"logs\" fx-value-service=\"timed\">Logs…</button>"));
+        assert!(html.contains("<li><button type=\"button\" fx-click=\"logs\">Logs…</button></li>"));
         // A hidden one says its state is not the person's, and is not asked
         // about again and again only to be refused.
         pick(&mut manager, "secret");
