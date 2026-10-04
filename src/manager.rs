@@ -1185,6 +1185,8 @@ mod tests {
                 definition_removed: false,
                 warnings: Vec::new(),
                 timers: Vec::new(),
+                progress: None,
+                granted: vec!["query_status".into(), "start".into(), "stop".into(), "interrogate".into()],
             }),
         );
         let html = shown(&manager, "");
@@ -1251,6 +1253,8 @@ mod tests {
                     timer("hourly", Some("2026-10-03T13:00:00.000000000Z"), Some("2026-10-03T13:00:00.000000000Z"), None, None),
                     timer("*-02-30", None, None, None, Some("calendar expression has no future occurrence")),
                 ],
+                progress: None,
+                granted: vec!["query_status".into(), "start".into(), "stop".into(), "interrogate".into()],
             }),
         );
         let html = shown(&manager, "");
