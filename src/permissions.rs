@@ -91,6 +91,7 @@ fn service_security(
         rights: service_rights(),
         generic: Generic { read: mapping.read, write: mapping.write, execute: mapping.execute, all: mapping.all },
         can,
+        ..Request::default()
     };
     let apply = move |sd: &[u8], parts: &[Part]| {
         // What it is now, with what the person changed put in: the rest is
@@ -102,7 +103,7 @@ fn service_security(
 }
 
 fn every() -> Result<(Request, Apply), String> {
-    let object = Object { name: "Every service".into(), kind: "Services without permissions of their own".into(), container: false, children: Children::All };
+    let object = Object { name: "Every service".into(), kind: "Services without permissions of their own".into(), container: false, children: Children::All, ..Object::default() };
     let cannot = "You may not change the definitions of services, which is where who may control them is kept.";
     service_security(SERVICES_ROOT_KEY, object, cannot, || system::every().map(|(descriptor, _)| descriptor))
 }
@@ -121,7 +122,7 @@ fn service_rights() -> Vec<Right> {
 }
 
 fn control(service: &str, title: &str) -> Result<(Request, Apply), String> {
-    let object = Object { name: title.into(), kind: "Service".into(), container: false, children: Children::All };
+    let object = Object { name: title.into(), kind: "Service".into(), container: false, children: Children::All, ..Object::default() };
     let cannot = "You may not change this service's definition, which is where who may control it is kept.";
     let service = service.to_string();
     // Its own, or the one it takes until it has its own: applied, it is its own.
