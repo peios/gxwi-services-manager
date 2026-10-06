@@ -1,0 +1,67 @@
+.TH GXWI-SERVICES-MANAGER 1 "2026-10-06" "Peios"
+.SH NAME
+gxwi-services-manager \- start, stop and look after the services on this machine, on a GXWI desktop
+.SH SYNOPSIS
+.B gxwi-services-manager
+.br
+.B gxwi-services-manager \-\-definition
+.I SERVICE
+.br
+.B gxwi-services-manager \-\-new
+.SH DESCRIPTION
+Services Manager lists every service defined on this machine, what each is
+doing, and when its next timer runs. Find a service narrows the list by name
+or description. The service picked is shown in full beside it: its state and
+why, its process, the account it runs as, how long it has run, what it has
+reported, and each timer, in local time. Start, Stop, Restart, Reload and
+Reset are under it, and on each row's right-click menu. A command does not
+hold up the window: it is followed, and what came of it is said.
+.PP
+It asks peinit, on its control socket, as the person looking, and does
+nothing with more authority than they have. A command is offered only where
+they hold the right it needs and it would do something in the service's
+state. As shipped, Administrators may do anything with a service, and
+everyone signed in may see what it is doing. Services they may not see but
+whose definitions they may read are listed as Not yours to see. If peinit
+does not let them in at all, the window says so, lists what definitions it
+can, and offers no command.
+.PP
+The state is asked again every two seconds; F5, or Refresh, asks at once.
+The registry's \%Machine\eSystem\eServices key is watched, so a definition
+changed elsewhere shows straight away.
+.PP
+Edit definition... opens the service's definition in a window of its own,
+and New service... a new one: this program again, with the options below.
+Every field is shown by group, checked as peinit checks it, and saved, with
+Save or Ctrl+S, in one transaction of only what changed. Changing a
+definition needs the right to set values on the service's key, defining one
+the right to make keys under \%Machine\eSystem\eServices, and deleting one
+DELETE on its key; as shipped, only Administrators have them. Without them,
+the definition is shown with every field fixed, and why.
+.PP
+Who may control it... and Who may change its definition... open the
+permissions editor on the service's ServiceSecurity and on its key; Default
+permissions... on the one every service without its own takes. What the
+person may not change is shown and not offered. Logs... opens what the
+service has logged in Event Viewer.
+.PP
+Without a desktop to open on, it says so and ends: on a terminal, svctl does
+what this does.
+.SH OPTIONS
+.TP
+.BI \-\-definition " SERVICE"
+Open the definition of
+.I SERVICE
+alone, in a window of its own.
+.TP
+.B \-\-new
+Open an empty definition, to define a new service.
+.SH FILES
+.TP
+.I /usr/share/apps/dev.peios.gxwi-services-manager.toml
+Its application declaration, listed in a launcher as Services Manager.
+.SH SEE ALSO
+.BR svctl (8),
+.BR gxwi-sd-editor (1).
+Controlling services, Defining a service, and Who can manage a service, at
+learn.peios.org.

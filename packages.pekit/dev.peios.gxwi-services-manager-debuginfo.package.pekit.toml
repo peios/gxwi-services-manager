@@ -1,0 +1,12 @@
+[package]
+name = "dev.peios.gxwi-services-manager-debuginfo"
+description = "GXWI services manager-debuginfo"
+license = "((MIT OR Apache-2.0) AND Unicode-3.0) AND Apache-2.0 AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT) AND BSD-3-Clause AND ISC AND MIT AND (MIT AND BSD-3-Clause) AND (MIT OR Unlicense)"
+
+[dependencies]
+"dev.peios.gxwi-services-manager" = "= {{release}}"
+
+[files]
+"@source:LICENSE" = "usr/share/licenses/dev.peios.gxwi-services-manager-debuginfo/LICENSE"
+":licenses/**" = "usr/share/licenses/dev.peios.gxwi-services-manager-debuginfo/third-party"
+":debug/gxwi-services-manager/usr/lib/debug/**" = "usr/lib/debug"

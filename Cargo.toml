@@ -6,17 +6,16 @@ license = "MIT"
 publish = false
 
 [dependencies]
-# The dialog role is not in a released libgxwi yet: until it is, the one
-# beside this checkout.
-libgxwi = { path = "../gxwi/libgxwi" }
-peios = { git = "https://github.com/peios/peios-rs.git", rev = "02c87cb643c30eef6b74cd1d9d8b0ae067bed69a", package = "peios" }
+# libgxwi as of the gxwi release dev.peios.gxwi-sdk stages, which a package
+# build takes it from (gxwi's dev/pins.toml).
+libgxwi = { git = "https://github.com/peios/gxwi.git", rev = "5629140add3de075511b3379fd690fdabd06dcaf" }
+peios = { git = "https://github.com/peios/peios-rs.git", rev = "f8c84930f2b71763bcf0550df0b1420a0f63b21e", package = "peios" }
 # What peinit offers a program that manages services (`peinit::client`),
 # and nothing of its own runtime: its features would bring in another
-# revision of `peios`. Beside this checkout until it is pushed.
-peinit2 = { path = "../peinit", default-features = false }
-# The permissions editor's protocol, and nothing of its program. Beside this
-# checkout until it is pushed.
-gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["splice", "registry"] }
+# revision of `peios`.
+peinit2 = { git = "https://github.com/peios/peinit.git", rev = "0ee3ea3c15e0b17e1aed887764bf5e3d6242bde3", default-features = false }
+# The permissions editor's protocol, and nothing of its program.
+gxwi-sd-editor = { git = "https://github.com/peios/gxwi-sd-editor.git", rev = "27239eb3411ab82d711262bfd59e537c66c29e9e", default-features = false, features = ["splice", "registry"] }
 # A timer's times, which peinit gives in UTC, said on this machine's clock.
 # The one peinit's calendar uses.
 jiff = "0.2.29"
