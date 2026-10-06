@@ -497,15 +497,17 @@ mod tests {
     #[test]
     fn each_timer_says_when_its_schedule_comes_round_and_one_that_never_does_says_so() {
         let mut editor = editor(&[("ImagePath", "/usr/bin/web")], Ok(()));
-        // Saturday 3 October 2026, 13:20, on a clock an hour east of UTC.
-        editor.clock = words::Clock::Fixed("2026-10-03T12:20:00Z".parse().unwrap(), jiff::tz::TimeZone::fixed(jiff::tz::offset(1)));
+        // Saturday 3 October 2026, 12:20 UTC, on the machine's own clock: a
+        // schedule with no zone is in the machine's zone, which a build root
+        // (often with no zone database) and a desk need not agree on, so the
+        // clock is read in the same one.
+        editor.clock = words::Clock::Fixed("2026-10-03T12:20:00Z".parse().unwrap(), jiff::tz::TimeZone::system());
         assert!(!shown(&editor).contains("class=\"schedules\""));
         typed(&mut editor, "Triggers", "boot\ntimer:*-*-* 02:00:00\ntimer:*-02-30");
         let html = shown(&editor);
-        assert!(html.contains(
-            "<ul class=\"schedules\"><li><code>*-*-* 02:00:00</code> comes round next tomorrow at 02:00.</li>\
-             <li class=\"bad\"><code>*-02-30</code> never comes round, so it never starts the service.</li></ul>"
-        ));
+        let said = html.split("<ul class=\"schedules\">").nth(1).unwrap_or(&html);
+        assert!(said.starts_with("<li><code>*-*-* 02:00:00</code> comes round next ") && said.contains(" at 02:00.</li>"), "{said}");
+        assert!(said.contains("<li class=\"bad\"><code>*-02-30</code> never comes round, so it never starts the service.</li></ul>"), "{said}");
         // It is said, not refused: peinit takes it, and arms the rest.
         assert!(html.contains("fx-click=\"save\" fx-key=\"Ctrl+S\">Save"));
     }
